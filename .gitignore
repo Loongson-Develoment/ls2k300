@@ -2,3 +2,10 @@ main
 build/
 .cache/
 *.o
+*.obj
+*.out
+*.exe
+*.dll
+*.so
+*.a
+.vscode/
