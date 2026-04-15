@@ -1,13 +1,16 @@
 #ifndef __LS2K0300_GPIO_H
 #define __LS2K0300_GPIO_H
 
+#include <pthread.h>
 #include "LS2K0300_MAP.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// gpio 引脚枚举类型
+/********************************************************************************
+ * @brief   GPIO 引脚枚举类型.
+ ********************************************************************************/
 typedef enum gpio_pin {
     PIN_0  = 0x00, PIN_1,  PIN_2,  PIN_3,  PIN_4,   PIN_5,   PIN_6,   PIN_7,   PIN_8,   PIN_9,   PIN_10,  PIN_11,  PIN_12,  PIN_13,  PIN_14,  PIN_15,
     PIN_16 = 0x10, PIN_17, PIN_18, PIN_19, PIN_20,  PIN_21,  PIN_22,  PIN_23,  PIN_24,  PIN_25,  PIN_26,  PIN_27,  PIN_28,  PIN_29,  PIN_30,  PIN_31,
@@ -19,30 +22,38 @@ typedef enum gpio_pin {
     PIN_INVALID
 } gpio_pin_t;
 
-// gpio 模式枚举类型
+/********************************************************************************
+ * @brief   GPIO 模式枚举类型.
+ ********************************************************************************/
 typedef enum gpio_mode {
-    GPIO_MODE_OUT = 0x00,   // GPIO 输出模式
-    GPIO_MODE_IN  = 0x01,   // GPIO 输入模式
-    GPIO_MODE_INVALID,      // GPIO 无效模式
+    GPIO_MODE_OUT = 0x00,
+    GPIO_MODE_IN  = 0x01,
+    GPIO_MODE_INVALID,
 } gpio_mode_t;
 
-// gpio 电平枚举类型
+/********************************************************************************
+ * @brief   GPIO 电平枚举类型.
+ ********************************************************************************/
 typedef enum gpio_level {
-    GPIO_LOW  = 0x00,   // GPIO 低电平(逻辑 0)
-    GPIO_HIGH = 0x01,   // GPIO 高电平(逻辑 1)
-    GPIO_LEVEL_INVALID, // GPIO 无效电平
+    GPIO_LOW  = 0x00,
+    GPIO_HIGH = 0x01,
+    GPIO_LEVEL_INVALID,
 } gpio_level_t;
 
-// gpio 复用模式枚举类型
+/********************************************************************************
+ * @brief   GPIO 复用模式枚举类型.
+ ********************************************************************************/
 typedef enum gpio_mux_mode {
-    GPIO_MUX_GPIO    = 0x00,    // GPIO 复用
-    GPIO_MUX_ALT1    = 0x01,    // 第一复用
-    GPIO_MUX_ALT2    = 0x02,    // 第二复用
-    GPIO_MUX_MAIN    = 0x03,    // 主复用
-    GPIO_MUX_INVALID,           // 无效复用模式
+    GPIO_MUX_GPIO = 0x00,
+    GPIO_MUX_ALT1 = 0x01,
+    GPIO_MUX_ALT2 = 0x02,
+    GPIO_MUX_MAIN = 0x03,
+    GPIO_MUX_INVALID,
 } gpio_mux_mode_t;
 
-// GPIO 控制句柄
+/********************************************************************************
+ * @brief   GPIO 控制句柄.
+ ********************************************************************************/
 typedef struct {
     gpio_pin_t      pin;
     gpio_mode_t     mode;
@@ -53,20 +64,91 @@ typedef struct {
     ls_reg32_addr_t gpio_o;
     ls_reg32_addr_t gpio_i;
 
-    pthread_mutex_t mtx; // 结构体独立锁
+    pthread_mutex_t mtx;
+    int             initialized;
 } ls2k0300_gpio_t;
 
-// 外部接口
+/********************************************************************************
+ * @brief   配置指定引脚复用功能.
+ * @param   pin : GPIO 引脚号.
+ * @param   mux : 复用模式.
+ * @return  none.
+ * @example ls2k0300_gpio_mux_set(PIN_64, GPIO_MUX_GPIO);
+ ********************************************************************************/
 void ls2k0300_gpio_mux_set(gpio_pin_t pin, gpio_mux_mode_t mux);
-int ls2k0300_gpio_init(ls2k0300_gpio_t* gpio, gpio_pin_t pin, gpio_mode_t mode, gpio_mux_mode_t mux);
-void ls2k0300_gpio_deinit(ls2k0300_gpio_t* gpio);
 
-void ls2k0300_gpio_direction_set(ls2k0300_gpio_t* gpio, gpio_mode_t mode);
-void ls2k0300_gpio_level_set(ls2k0300_gpio_t* gpio, gpio_level_t val);
-gpio_level_t ls2k0300_gpio_level_get(ls2k0300_gpio_t* gpio);
+/********************************************************************************
+ * @brief   初始化 GPIO 句柄并映射寄存器.
+ * @param   gpio : GPIO 句柄指针.
+ * @param   pin  : GPIO 引脚号.
+ * @param   mode : 输入/输出模式.
+ * @param   mux  : 复用模式.
+ * @return  成功返回 0，失败返回 -1.
+ * @example ls2k0300_gpio_t led;
+ *          ls2k0300_gpio_init(&led, PIN_64, GPIO_MODE_OUT, GPIO_MUX_GPIO);
+ ********************************************************************************/
+int ls2k0300_gpio_init(ls2k0300_gpio_t *gpio, gpio_pin_t pin, gpio_mode_t mode, gpio_mux_mode_t mux);
+
+/********************************************************************************
+ * @brief   释放 GPIO 句柄及映射资源.
+ * @param   gpio : GPIO 句柄指针.
+ * @return  none.
+ * @example ls2k0300_gpio_deinit(&led);
+ ********************************************************************************/
+void ls2k0300_gpio_deinit(ls2k0300_gpio_t *gpio);
+
+/********************************************************************************
+ * @brief   设置 GPIO 方向.
+ * @param   gpio : GPIO 句柄.
+ * @param   mode : GPIO_MODE_IN 或 GPIO_MODE_OUT.
+ * @return  none.
+ * @example ls2k0300_gpio_direction_set(&led, GPIO_MODE_OUT);
+ ********************************************************************************/
+void ls2k0300_gpio_direction_set(ls2k0300_gpio_t *gpio, gpio_mode_t mode);
+
+/********************************************************************************
+ * @brief   设置 GPIO 输出电平.
+ * @param   gpio : GPIO 句柄.
+ * @param   val  : GPIO_LOW 或 GPIO_HIGH.
+ * @return  none.
+ * @example ls2k0300_gpio_level_set(&led, GPIO_HIGH);
+ ********************************************************************************/
+void ls2k0300_gpio_level_set(ls2k0300_gpio_t *gpio, gpio_level_t val);
+
+/********************************************************************************
+ * @brief   读取 GPIO 输入电平.
+ * @param   gpio : GPIO 句柄.
+ * @return  成功返回 GPIO_LOW 或 GPIO_HIGH，失败返回 GPIO_LEVEL_INVALID.
+ * @example gpio_level_t lv = ls2k0300_gpio_level_get(&key);
+ ********************************************************************************/
+gpio_level_t ls2k0300_gpio_level_get(ls2k0300_gpio_t *gpio);
+
+/********************************************************************************
+ * @brief   获取 GPIO 当前引脚号.
+ * @param   gpio : GPIO 句柄.
+ * @return  成功返回引脚号，失败返回 PIN_INVALID.
+ * @example gpio_pin_t pin = ls2k0300_gpio_get_pin(&led);
+ ********************************************************************************/
+gpio_pin_t ls2k0300_gpio_get_pin(ls2k0300_gpio_t *gpio);
+
+/********************************************************************************
+ * @brief   获取 GPIO 当前方向模式.
+ * @param   gpio : GPIO 句柄.
+ * @return  成功返回 GPIO_MODE_IN/OUT，失败返回 GPIO_MODE_INVALID.
+ * @example gpio_mode_t mode = ls2k0300_gpio_get_mode(&led);
+ ********************************************************************************/
+gpio_mode_t ls2k0300_gpio_get_mode(ls2k0300_gpio_t *gpio);
+
+/********************************************************************************
+ * @brief   获取 GPIO 当前复用模式.
+ * @param   gpio : GPIO 句柄.
+ * @return  成功返回复用值，失败返回 GPIO_MUX_INVALID.
+ * @example gpio_mux_mode_t mux = ls2k0300_gpio_get_mux(&led);
+ ********************************************************************************/
+gpio_mux_mode_t ls2k0300_gpio_get_mux(ls2k0300_gpio_t *gpio);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif // __LS2K0300_GPIO_H
+#endif

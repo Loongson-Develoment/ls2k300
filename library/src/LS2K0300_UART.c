@@ -1,26 +1,48 @@
 #include "LS2K0300_UART.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
 
-int ls2k0300_uart_init(ls2k0300_uart_t* uart, const char* path, speed_t baud, ls_uart_stop_bits_t stop, ls_uart_data_bits_t data, ls_uart_parity_t parity) {
-    if (uart == NULL || path == NULL) return -1;
+/********************************************************************************
+ * @brief   初始化 UART 句柄.
+ * @param   uart   : UART 句柄.
+ * @param   path   : 设备路径.
+ * @param   baud   : 波特率.
+ * @param   stop   : 停止位.
+ * @param   data   : 数据位.
+ * @param   parity : 校验位.
+ * @return  成功返回 0，失败返回 -1.
+ * @example ls2k0300_uart_t uart;
+ *          ls2k0300_uart_init(&uart, UART1, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE);
+ ********************************************************************************/
+int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
+                       ls_uart_stop_bits_t stop, ls_uart_data_bits_t data, ls_uart_parity_t parity)
+{
+    if (uart == NULL || path == NULL) {
+        return -1;
+    }
 
+    memset(uart, 0, sizeof(*uart));
+    uart->fd = -1;
     pthread_mutex_init(&uart->mtx, NULL);
+
     pthread_mutex_lock(&uart->mtx);
 
+    /* 打开串口设备，使用非阻塞打开策略 */
     uart->fd = open(path, O_RDWR | O_NOCTTY | O_NDELAY);
     if (uart->fd < 0) {
         printf("Open %s failed\n", path);
         pthread_mutex_unlock(&uart->mtx);
+        pthread_mutex_destroy(&uart->mtx);
         return -1;
     }
 
-    memset(&uart->ts, 0, sizeof(uart->ts));
     if (tcgetattr(uart->fd, &uart->ts) != 0) {
         printf("tcgetattr failed\n");
     }
 
+    /* 配置基础串口属性：原始模式、禁用软硬件流控 */
     uart->ts.c_cflag |= CREAD | CLOCAL;
     uart->ts.c_cflag &= ~CRTSCTS;
     uart->ts.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
@@ -36,28 +58,30 @@ int ls2k0300_uart_init(ls2k0300_uart_t* uart, const char* path, speed_t baud, ls
         case LS_UART_DATA6: uart->ts.c_cflag |= CS6; break;
         case LS_UART_DATA7: uart->ts.c_cflag |= CS7; break;
         case LS_UART_DATA8: uart->ts.c_cflag |= CS8; break;
-        default: printf("Invalid data bits\n"); break;
+        default:            uart->ts.c_cflag |= CS8; break;
     }
 
     switch (parity) {
-        case LS_UART_PARITY_NONE: 
-            uart->ts.c_cflag &= ~PARENB; 
+        case LS_UART_PARITY_NONE:
+            uart->ts.c_cflag &= ~PARENB;
             break;
-        case LS_UART_PARITY_ODD: 
+        case LS_UART_PARITY_ODD:
             uart->ts.c_cflag |= PARENB;
-            uart->ts.c_cflag |= PARODD; 
+            uart->ts.c_cflag |= PARODD;
             break;
-        case LS_UART_PARITY_EVEN: 
+        case LS_UART_PARITY_EVEN:
             uart->ts.c_cflag |= PARENB;
-            uart->ts.c_cflag &= ~PARODD; 
+            uart->ts.c_cflag &= ~PARODD;
             break;
-        default: printf("Invalid parity\n"); break;
+        default:
+            uart->ts.c_cflag &= ~PARENB;
+            break;
     }
 
     switch (stop) {
         case LS_UART_STOP1: uart->ts.c_cflag &= ~CSTOPB; break;
         case LS_UART_STOP2: uart->ts.c_cflag |= CSTOPB; break;
-        default: printf("Invalid stop bits\n"); break;
+        default:            uart->ts.c_cflag &= ~CSTOPB; break;
     }
 
     uart->ts.c_cc[VMIN] = 0;
@@ -67,42 +91,103 @@ int ls2k0300_uart_init(ls2k0300_uart_t* uart, const char* path, speed_t baud, ls
         printf("tcsetattr failed\n");
     }
 
+    /* 清空历史缓存，避免旧数据干扰 */
     tcflush(uart->fd, TCIOFLUSH);
+    uart->initialized = 1;
+
     pthread_mutex_unlock(&uart->mtx);
     return 0;
 }
 
-void ls2k0300_uart_deinit(ls2k0300_uart_t* uart) {
-    if (uart == NULL) return;
+/********************************************************************************
+ * @brief   释放 UART 句柄.
+ * @param   uart : UART 句柄.
+ * @return  none.
+ * @example ls2k0300_uart_deinit(&uart);
+ ********************************************************************************/
+void ls2k0300_uart_deinit(ls2k0300_uart_t *uart)
+{
+    if (uart == NULL) {
+        return;
+    }
+
     pthread_mutex_lock(&uart->mtx);
+
     if (uart->fd >= 0) {
         close(uart->fd);
         uart->fd = -1;
     }
+    uart->initialized = 0;
+
     pthread_mutex_unlock(&uart->mtx);
     pthread_mutex_destroy(&uart->mtx);
 }
 
-ssize_t ls2k0300_uart_write(ls2k0300_uart_t* uart, const uint8_t* buf, size_t len) {
-    if (uart == NULL || uart->fd < 0 || buf == NULL) return -1;
+/********************************************************************************
+ * @brief   UART 发送函数.
+ * @param   uart : UART 句柄.
+ * @param   buf  : 待发送数据.
+ * @param   len  : 发送长度.
+ * @return  成功返回写入字节数，失败返回 -1.
+ * @example const uint8_t msg[] = "OK\r\n";
+ *          ls2k0300_uart_write(&uart, msg, sizeof(msg)-1);
+ ********************************************************************************/
+ssize_t ls2k0300_uart_write(ls2k0300_uart_t *uart, const uint8_t *buf, size_t len)
+{
+    ssize_t ret;
+
+    if (uart == NULL || uart->initialized == 0 || uart->fd < 0 || buf == NULL || len == 0U) {
+        return -1;
+    }
+
     pthread_mutex_lock(&uart->mtx);
-    ssize_t ret = write(uart->fd, buf, len);
+    ret = write(uart->fd, buf, len);
     pthread_mutex_unlock(&uart->mtx);
+
     return ret;
 }
 
-ssize_t ls2k0300_uart_read(ls2k0300_uart_t* uart, uint8_t* buf, size_t len) {
-    if (uart == NULL || uart->fd < 0 || buf == NULL) return -1;
+/********************************************************************************
+ * @brief   UART 接收函数.
+ * @param   uart : UART 句柄.
+ * @param   buf  : 接收缓存.
+ * @param   len  : 最大读取长度.
+ * @return  成功返回读取字节数，失败返回 -1.
+ * @example uint8_t rx[64];
+ *          ssize_t n = ls2k0300_uart_read(&uart, rx, sizeof(rx));
+ ********************************************************************************/
+ssize_t ls2k0300_uart_read(ls2k0300_uart_t *uart, uint8_t *buf, size_t len)
+{
+    ssize_t ret;
+
+    if (uart == NULL || uart->initialized == 0 || uart->fd < 0 || buf == NULL || len == 0U) {
+        return -1;
+    }
+
     pthread_mutex_lock(&uart->mtx);
-    ssize_t ret = read(uart->fd, buf, len);
+    ret = read(uart->fd, buf, len);
     pthread_mutex_unlock(&uart->mtx);
+
     return ret;
 }
 
-int ls2k0300_uart_flush(ls2k0300_uart_t* uart) {
-    if (uart == NULL || uart->fd < 0) return -1;
+/********************************************************************************
+ * @brief   清空 UART 缓冲区.
+ * @param   uart : UART 句柄.
+ * @return  成功返回 0，失败返回 -1.
+ * @example ls2k0300_uart_flush(&uart);
+ ********************************************************************************/
+int ls2k0300_uart_flush(ls2k0300_uart_t *uart)
+{
+    int ret;
+
+    if (uart == NULL || uart->initialized == 0 || uart->fd < 0) {
+        return -1;
+    }
+
     pthread_mutex_lock(&uart->mtx);
-    int ret = tcflush(uart->fd, TCIOFLUSH);
+    ret = tcflush(uart->fd, TCIOFLUSH);
     pthread_mutex_unlock(&uart->mtx);
+
     return ret;
 }
