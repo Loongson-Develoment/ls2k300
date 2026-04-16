@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
+#include <termios.h>
+#include <bits/termios-baud.h>
+#include <asm-generic/termbits.h>
 
 /********************************************************************************
  * @brief   初始化 UART 句柄.
@@ -19,7 +22,7 @@
 int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
                        ls_uart_stop_bits_t stop, ls_uart_data_bits_t data, ls_uart_parity_t parity)
 {
-    if (uart == NULL || path == NULL) {
+    if (uart == NULL || path == NULL) { 
         return -1;
     }
 
