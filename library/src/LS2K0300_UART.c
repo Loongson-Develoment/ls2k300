@@ -7,8 +7,10 @@
 #include <poll.h>
 #include <pthread.h>
 #include <termios.h>
-// #include <bits/termios-baud.h>
-// #include <asm-generic/termbits.h>
+
+#ifndef CRTSCTS
+#define CRTSCTS 020000000000 /* Flow control.  */
+#endif
 
 /********************************************************************************
  * @brief   初始化 UART 句柄.
