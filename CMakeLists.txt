@@ -16,6 +16,7 @@ find_package(OpenCV REQUIRED)
 
 include_directories(${PROJECT_SOURCE_DIR}/user/inc)
 include_directories(${PROJECT_SOURCE_DIR}/library/inc)
+include_directories(${PROJECT_SOURCE_DIR}/Driver/inc)
 include_directories(/usr/local/loongson/loongson-gnu-toolchain-8.3-x86_64-loongarch64-linux-gnu-rc1.3-1/include)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
@@ -24,6 +25,8 @@ file(GLOB SRC
     "${PROJECT_SOURCE_DIR}/user/src/*.cpp"
     "${PROJECT_SOURCE_DIR}/user/*.c"
     "${PROJECT_SOURCE_DIR}/user/*.cpp"
+    "${PROJECT_SOURCE_DIR}/Driver/src/*.c"
+    "${PROJECT_SOURCE_DIR}/Driver/src/*.cpp"
     "${PROJECT_SOURCE_DIR}/library/src/*.c"
     "${PROJECT_SOURCE_DIR}/library/src/*.cpp")
 

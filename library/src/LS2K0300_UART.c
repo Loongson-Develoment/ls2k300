@@ -2,10 +2,13 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
 #include <termios.h>
-#include <bits/termios-baud.h>
-#include <asm-generic/termbits.h>
+// #include <bits/termios-baud.h>
+// #include <asm-generic/termbits.h>
 
 /********************************************************************************
  * @brief   初始化 UART 句柄.
@@ -15,12 +18,13 @@
  * @param   stop   : 停止位.
  * @param   data   : 数据位.
  * @param   parity : 校验位.
+ * @param   mode   : 模式配置.
  * @return  成功返回 0，失败返回 -1.
  * @example ls2k0300_uart_t uart;
- *          ls2k0300_uart_init(&uart, UART1, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE);
+ *          ls2k0300_uart_init(&uart, UART1, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE, LS_UART_MODE_BLOCKING);
  ********************************************************************************/
 int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
-                       ls_uart_stop_bits_t stop, ls_uart_data_bits_t data, ls_uart_parity_t parity)
+                       ls_uart_stop_bits_t stop, ls_uart_data_bits_t data, ls_uart_parity_t parity, ls_uart_mode_t mode)
 {
     if (uart == NULL || path == NULL) { 
         return -1;
@@ -33,7 +37,11 @@ int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
     pthread_mutex_lock(&uart->mtx);
 
     /* 打开串口设备，使用非阻塞打开策略 */
-    uart->fd = open(path, O_RDWR | O_NOCTTY | O_NDELAY);
+    if (mode == LS_UART_MODE_NON_BLOCKING) {
+        uart->fd = open(path, O_RDWR | O_NOCTTY | O_NDELAY);
+    } else {
+        uart->fd = open(path, O_RDWR | O_NOCTTY);
+    }
     if (uart->fd < 0) {
         printf("Open %s failed\n", path);
         pthread_mutex_unlock(&uart->mtx);
@@ -87,8 +95,13 @@ int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
         default:            uart->ts.c_cflag &= ~CSTOPB; break;
     }
 
-    uart->ts.c_cc[VMIN] = 0;
-    uart->ts.c_cc[VTIME] = 5;
+    if (mode == LS_UART_MODE_NON_BLOCKING) {
+        uart->ts.c_cc[VMIN] = 0;
+    } else {
+        uart->ts.c_cc[VMIN] = 1;
+    }
+    uart->ts.c_cc[VTIME] = 0;
+
 
     if (tcsetattr(uart->fd, TCSANOW, &uart->ts) != 0) {
         printf("tcsetattr failed\n");
@@ -99,6 +112,36 @@ int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
     uart->initialized = 1;
 
     pthread_mutex_unlock(&uart->mtx);
+    return 0;
+}
+
+/********************************************************************************
+ * @brief   初始化 阻塞UART 句柄.
+ * @param   uart   : UART 句柄.
+ * @param   path   : 设备路径.
+ * @param   baud   : 波特率.
+ * @param   stop   : 停止位.
+ * @param   data   : 数据位.
+ * @param   parity : 校验位.
+ * @param   char_num : 需要读取的字符数量.
+ * @return  成功返回 0，失败返回 -1.
+ * @example ls2k0300_uart_t uart;
+ *          ls2k0300_uart_init(&uart, UART1, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE，5);
+ ********************************************************************************/
+int ls2k0300_uart_block_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
+                               ls_uart_stop_bits_t stop, ls_uart_data_bits_t data, ls_uart_parity_t parity, uint32_t char_num)
+{
+    int ret = ls2k0300_uart_init(uart, path, baud, stop, data, parity, LS_UART_MODE_BLOCKING);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* 切换到阻塞模式 */
+    fcntl(uart->fd, F_SETFL, fcntl(uart->fd, F_GETFL) & ~O_NDELAY);
+    uart->ts.c_cc[VMIN] = char_num;
+    if (tcsetattr(uart->fd, TCSANOW, &uart->ts) != 0) {
+    printf("tcsetattr failed\n");
+    }
     return 0;
 }
 
@@ -172,6 +215,75 @@ ssize_t ls2k0300_uart_read(ls2k0300_uart_t *uart, uint8_t *buf, size_t len)
     pthread_mutex_unlock(&uart->mtx);
 
     return ret;
+}
+
+/********************************************************************************
+ * @brief   UART 不定长接收（字节间超时分帧，毫秒级）.
+ * @param   uart : UART 句柄.
+ * @param   buf  : 接收缓存.
+ * @param   len  : 最大读取长度.
+ * @param   inter_timeout_ms : 字节间超时（毫秒）.
+ * @return  成功返回读取字节数，失败返回 -1.
+ * @note    首字节阻塞等待，后续字节采用 poll 毫秒级超时分帧.
+ ********************************************************************************/
+ssize_t ls2k0300_uart_read_var(ls2k0300_uart_t *uart, uint8_t *buf, size_t len,
+                               int inter_timeout_ms)
+{
+    size_t total = 0U;
+    struct pollfd pfd;
+
+    if (uart == NULL || uart->initialized == 0 || uart->fd < 0 || buf == NULL || len == 0U ||
+        inter_timeout_ms < 0) {
+        return -1;
+    }
+
+    pfd.fd = uart->fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    while (total < len) {
+        ssize_t n;
+        int timeout_ms = (total == 0U) ? -1 : inter_timeout_ms;
+        int poll_ret = poll(&pfd, 1, timeout_ms);
+
+        if (poll_ret == 0) {
+            break;
+        }
+
+        if (poll_ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+
+        if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            return (total > 0U) ? (ssize_t)total : -1;
+        }
+
+        if ((pfd.revents & POLLIN) == 0) {
+            continue;
+        }
+
+        n = ls2k0300_uart_read(uart, buf + total, len - total);
+
+        if (n > 0) {
+            total += (size_t)n;
+            continue;
+        }
+
+        if (n == 0) {
+            continue;
+        }
+
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+            continue;
+        }
+
+        return -1;
+    }
+
+    return (ssize_t)total;
 }
 
 /********************************************************************************
