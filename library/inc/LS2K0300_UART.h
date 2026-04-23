@@ -82,7 +82,7 @@ int ls2k0300_uart_init(ls2k0300_uart_t *uart, const char *path, speed_t baud,
  * @param   stop   : 停止位.
  * @param   data   : 数据位.
  * @param   parity : 校验位.
- * @param   char_num : 需要读取的字符数量.
+ * @param   char_num : 需要读取的字节数量.
  * @return  成功返回 0，失败返回 -1.
  * @example ls2k0300_uart_t uart;
  *          ls2k0300_uart_init(&uart, UART1, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE，5);

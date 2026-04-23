@@ -10,6 +10,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 find_package(Threads REQUIRED)
 set(OpenCV_DIR "/home/ch2/opencv-4.10.0/install/lib/cmake/opencv4")
 find_package(OpenCV REQUIRED)
@@ -31,4 +35,5 @@ file(GLOB SRC
     "${PROJECT_SOURCE_DIR}/library/src/*.cpp")
 
 add_executable(main ${SRC})
+target_compile_options(main PRIVATE -O3)
 target_link_libraries(main PUBLIC Threads::Threads ${OpenCV_LIBS})

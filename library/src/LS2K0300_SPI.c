@@ -48,6 +48,7 @@
 #define LS_SPI01_SFC_PARAM_MEMORY_EN (1U << 0)
 
 #define LS_SPI01_BYTE_TIMEOUT_US    (100000U)
+#define LS_SPI01_POLL_PER_US        (64U)
 
 /********************************************************************************
  * @brief   SPI2/3 寄存器偏移定义.
@@ -160,12 +161,20 @@ static void spi01_pick_divider(uint32_t speed_hz, uint8_t *spr, uint8_t *spre, u
  ********************************************************************************/
 static int spi01_wait_spsr(ls2k0300_spi_t *spi, uint8_t mask, int expect_set, uint32_t timeout_us)
 {
-    uint32_t waited_us;
-    const uint32_t step_us = 10U;
+    uint32_t loops;
     uint8_t spsr;
 
-    waited_us = 0U;
-    while (waited_us < timeout_us) {
+    if (timeout_us == 0U) {
+        timeout_us = 1U;
+    }
+
+    /* SPI1 场景用紧凑轮询替代 usleep，减少每字节等待开销 */
+    loops = timeout_us * LS_SPI01_POLL_PER_US;
+    if (loops == 0U) {
+        loops = 1U;
+    }
+
+    while (loops-- > 0U) {
         spsr = ls_readb(spi->spi_sr1);
         if (expect_set != 0) {
             if ((spsr & mask) != 0U) {
@@ -176,8 +185,6 @@ static int spi01_wait_spsr(ls2k0300_spi_t *spi, uint8_t mask, int expect_set, ui
                 return 1;
             }
         }
-        usleep(step_us);
-        waited_us += step_us;
     }
 
     return 0;

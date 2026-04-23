@@ -14,18 +14,18 @@
 /********************************************************************************
  * @brief   屏幕控制引脚定义.
  * @note    SPI2 的 SCLK/MOSI/MISO/CS 由 LS2K0300_SPI 驱动按端口固定配置：
- *          SCLK=PIN_64, MOSI=PIN_65, MISO=PIN_66, CS=PIN_67(内部自动控制).
+ *          SCLK=PIN_64, MISO=PIN_65, MOSI=PIN_66, CS=PIN_67(内部自动控制).
  *          这里仅额外指定 DC/RST/BL 三个 GPIO.
  ********************************************************************************/
-#define EXAMPLE_LCD_DC_PIN   PIN_68
-#define EXAMPLE_LCD_RST_PIN  PIN_69
-#define EXAMPLE_LCD_BL_PIN   PIN_70
+#define EXAMPLE_LCD_DC_PIN   PIN_50
+#define EXAMPLE_LCD_RST_PIN  PIN_51
+#define EXAMPLE_LCD_BL_PIN   PIN_74
 
 /********************************************************************************
  * @brief   SPI 端口与时钟配置.
  ********************************************************************************/
 #define EXAMPLE_SPI_PORT      LS_SPI2
-#define EXAMPLE_SPI_SPEED_HZ  (20000000U)
+#define EXAMPLE_SPI_SPEED_HZ  (40000000U)
 
 /********************************************************************************
  * @brief   测试图像缓冲区（BGR888）.

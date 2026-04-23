@@ -36,7 +36,135 @@
 #define ICST7735_MADCTL_MV    (0x20U)
 #define ICST7735_MADCTL_BGR   (0x08U)
 
-#define ICST7735_TX_CHUNK_PIXELS  (64U)
+#define ICST7735_TX_CHUNK_PIXELS  (20480U) /* SPI 传输分块像素数，需保证单块数据不超过 64KB */
+
+/********************************************************************************
+ * @brief   5x7 英文/数字字模数据表.
+ * @note    每个字符由 5 列组成，每列低 7 bit 表示自上而下像素点.
+ ********************************************************************************/
+static const uint8_t g_icst7735_font5x7_digits[10][ICST7735_FONT5X7_WIDTH] = {
+    {0x3EU, 0x51U, 0x49U, 0x45U, 0x3EU}, /* 0 */
+    {0x00U, 0x42U, 0x7FU, 0x40U, 0x00U}, /* 1 */
+    {0x42U, 0x61U, 0x51U, 0x49U, 0x46U}, /* 2 */
+    {0x21U, 0x41U, 0x45U, 0x4BU, 0x31U}, /* 3 */
+    {0x18U, 0x14U, 0x12U, 0x7FU, 0x10U}, /* 4 */
+    {0x27U, 0x45U, 0x45U, 0x45U, 0x39U}, /* 5 */
+    {0x3CU, 0x4AU, 0x49U, 0x49U, 0x30U}, /* 6 */
+    {0x01U, 0x71U, 0x09U, 0x05U, 0x03U}, /* 7 */
+    {0x36U, 0x49U, 0x49U, 0x49U, 0x36U}, /* 8 */
+    {0x06U, 0x49U, 0x49U, 0x29U, 0x1EU}, /* 9 */
+};
+
+static const uint8_t g_icst7735_font5x7_upper[26][ICST7735_FONT5X7_WIDTH] = {
+    {0x7EU, 0x11U, 0x11U, 0x11U, 0x7EU}, /* A */
+    {0x7FU, 0x49U, 0x49U, 0x49U, 0x36U}, /* B */
+    {0x3EU, 0x41U, 0x41U, 0x41U, 0x22U}, /* C */
+    {0x7FU, 0x41U, 0x41U, 0x22U, 0x1CU}, /* D */
+    {0x7FU, 0x49U, 0x49U, 0x49U, 0x41U}, /* E */
+    {0x7FU, 0x09U, 0x09U, 0x09U, 0x01U}, /* F */
+    {0x3EU, 0x41U, 0x49U, 0x49U, 0x7AU}, /* G */
+    {0x7FU, 0x08U, 0x08U, 0x08U, 0x7FU}, /* H */
+    {0x00U, 0x41U, 0x7FU, 0x41U, 0x00U}, /* I */
+    {0x20U, 0x40U, 0x41U, 0x3FU, 0x01U}, /* J */
+    {0x7FU, 0x08U, 0x14U, 0x22U, 0x41U}, /* K */
+    {0x7FU, 0x40U, 0x40U, 0x40U, 0x40U}, /* L */
+    {0x7FU, 0x02U, 0x0CU, 0x02U, 0x7FU}, /* M */
+    {0x7FU, 0x04U, 0x08U, 0x10U, 0x7FU}, /* N */
+    {0x3EU, 0x41U, 0x41U, 0x41U, 0x3EU}, /* O */
+    {0x7FU, 0x09U, 0x09U, 0x09U, 0x06U}, /* P */
+    {0x3EU, 0x41U, 0x51U, 0x21U, 0x5EU}, /* Q */
+    {0x7FU, 0x09U, 0x19U, 0x29U, 0x46U}, /* R */
+    {0x46U, 0x49U, 0x49U, 0x49U, 0x31U}, /* S */
+    {0x01U, 0x01U, 0x7FU, 0x01U, 0x01U}, /* T */
+    {0x3FU, 0x40U, 0x40U, 0x40U, 0x3FU}, /* U */
+    {0x1FU, 0x20U, 0x40U, 0x20U, 0x1FU}, /* V */
+    {0x3FU, 0x40U, 0x38U, 0x40U, 0x3FU}, /* W */
+    {0x63U, 0x14U, 0x08U, 0x14U, 0x63U}, /* X */
+    {0x07U, 0x08U, 0x70U, 0x08U, 0x07U}, /* Y */
+    {0x61U, 0x51U, 0x49U, 0x45U, 0x43U}, /* Z */
+};
+
+static const uint8_t g_icst7735_font5x7_lower[26][ICST7735_FONT5X7_WIDTH] = {
+    {0x20U, 0x54U, 0x54U, 0x54U, 0x78U}, /* a */
+    {0x7FU, 0x48U, 0x44U, 0x44U, 0x38U}, /* b */
+    {0x38U, 0x44U, 0x44U, 0x44U, 0x20U}, /* c */
+    {0x38U, 0x44U, 0x44U, 0x48U, 0x7FU}, /* d */
+    {0x38U, 0x54U, 0x54U, 0x54U, 0x18U}, /* e */
+    {0x08U, 0x7EU, 0x09U, 0x01U, 0x02U}, /* f */
+    {0x0CU, 0x52U, 0x52U, 0x52U, 0x3EU}, /* g */
+    {0x7FU, 0x08U, 0x04U, 0x04U, 0x78U}, /* h */
+    {0x00U, 0x44U, 0x7DU, 0x40U, 0x00U}, /* i */
+    {0x20U, 0x40U, 0x44U, 0x3DU, 0x00U}, /* j */
+    {0x7FU, 0x10U, 0x28U, 0x44U, 0x00U}, /* k */
+    {0x00U, 0x41U, 0x7FU, 0x40U, 0x00U}, /* l */
+    {0x7CU, 0x04U, 0x18U, 0x04U, 0x78U}, /* m */
+    {0x7CU, 0x08U, 0x04U, 0x04U, 0x78U}, /* n */
+    {0x38U, 0x44U, 0x44U, 0x44U, 0x38U}, /* o */
+    {0x7CU, 0x14U, 0x14U, 0x14U, 0x08U}, /* p */
+    {0x08U, 0x14U, 0x14U, 0x18U, 0x7CU}, /* q */
+    {0x7CU, 0x08U, 0x04U, 0x04U, 0x08U}, /* r */
+    {0x48U, 0x54U, 0x54U, 0x54U, 0x20U}, /* s */
+    {0x04U, 0x3FU, 0x44U, 0x40U, 0x20U}, /* t */
+    {0x3CU, 0x40U, 0x40U, 0x20U, 0x7CU}, /* u */
+    {0x1CU, 0x20U, 0x40U, 0x20U, 0x1CU}, /* v */
+    {0x3CU, 0x40U, 0x30U, 0x40U, 0x3CU}, /* w */
+    {0x44U, 0x28U, 0x10U, 0x28U, 0x44U}, /* x */
+    {0x0CU, 0x50U, 0x50U, 0x50U, 0x3CU}, /* y */
+    {0x44U, 0x64U, 0x54U, 0x4CU, 0x44U}, /* z */
+};
+
+/********************************************************************************
+ * @brief   查询单个字符的 5x7 字模.
+ * @param   ch      : 输入字符.
+ * @param   glyph5  : 输出字模（长度 5 字节）.
+ * @return  none.
+ ********************************************************************************/
+static void icst7735_get_glyph5x7(char ch, uint8_t glyph5[ICST7735_FONT5X7_WIDTH])
+{
+    static const uint8_t blank[ICST7735_FONT5X7_WIDTH] = {0x00U, 0x00U, 0x00U, 0x00U, 0x00U};
+    static const uint8_t question[ICST7735_FONT5X7_WIDTH] = {0x02U, 0x01U, 0x51U, 0x09U, 0x06U};
+    static const uint8_t exclam[ICST7735_FONT5X7_WIDTH] = {0x00U, 0x00U, 0x5FU, 0x00U, 0x00U};
+    static const uint8_t dash[ICST7735_FONT5X7_WIDTH] = {0x08U, 0x08U, 0x08U, 0x08U, 0x08U};
+    static const uint8_t underline[ICST7735_FONT5X7_WIDTH] = {0x40U, 0x40U, 0x40U, 0x40U, 0x40U};
+    static const uint8_t dot[ICST7735_FONT5X7_WIDTH] = {0x00U, 0x60U, 0x60U, 0x00U, 0x00U};
+    static const uint8_t colon[ICST7735_FONT5X7_WIDTH] = {0x00U, 0x36U, 0x36U, 0x00U, 0x00U};
+    static const uint8_t slash[ICST7735_FONT5X7_WIDTH] = {0x20U, 0x10U, 0x08U, 0x04U, 0x02U};
+    static const uint8_t plus[ICST7735_FONT5X7_WIDTH] = {0x08U, 0x08U, 0x3EU, 0x08U, 0x08U};
+    static const uint8_t equal[ICST7735_FONT5X7_WIDTH] = {0x14U, 0x14U, 0x14U, 0x14U, 0x14U};
+
+    if (glyph5 == NULL) {
+        return;
+    }
+
+    if (ch >= '0' && ch <= '9') {
+        memcpy(glyph5, g_icst7735_font5x7_digits[(uint8_t)(ch - '0')], ICST7735_FONT5X7_WIDTH);
+        return;
+    }
+
+    if (ch >= 'A' && ch <= 'Z') {
+        memcpy(glyph5, g_icst7735_font5x7_upper[(uint8_t)(ch - 'A')], ICST7735_FONT5X7_WIDTH);
+        return;
+    }
+
+    if (ch >= 'a' && ch <= 'z') {
+        memcpy(glyph5, g_icst7735_font5x7_lower[(uint8_t)(ch - 'a')], ICST7735_FONT5X7_WIDTH);
+        return;
+    }
+
+    switch (ch) {
+    case ' ': memcpy(glyph5, blank, ICST7735_FONT5X7_WIDTH); break;
+    case '?': memcpy(glyph5, question, ICST7735_FONT5X7_WIDTH); break;
+    case '!': memcpy(glyph5, exclam, ICST7735_FONT5X7_WIDTH); break;
+    case '-': memcpy(glyph5, dash, ICST7735_FONT5X7_WIDTH); break;
+    case '_': memcpy(glyph5, underline, ICST7735_FONT5X7_WIDTH); break;
+    case '.': memcpy(glyph5, dot, ICST7735_FONT5X7_WIDTH); break;
+    case ':': memcpy(glyph5, colon, ICST7735_FONT5X7_WIDTH); break;
+    case '/': memcpy(glyph5, slash, ICST7735_FONT5X7_WIDTH); break;
+    case '+': memcpy(glyph5, plus, ICST7735_FONT5X7_WIDTH); break;
+    case '=': memcpy(glyph5, equal, ICST7735_FONT5X7_WIDTH); break;
+    default:  memcpy(glyph5, question, ICST7735_FONT5X7_WIDTH); break;
+    }
+}
 
 /********************************************************************************
  * @brief   毫秒级延时辅助函数.
@@ -136,6 +264,8 @@ static int icst7735_write_cmd_data(icst7735_t *lcd, uint8_t cmd, const uint8_t *
 static int icst7735_apply_rotation(icst7735_t *lcd, icst7735_rotation_t rotation)
 {
     uint8_t madctl;
+    uint16_t rot_x_offset;
+    uint16_t rot_y_offset;
 
     if (lcd == NULL || rotation >= ICST7735_ROTATION_INVALID) {
         return -1;
@@ -144,32 +274,62 @@ static int icst7735_apply_rotation(icst7735_t *lcd, icst7735_rotation_t rotation
     switch (rotation) {
     case ICST7735_ROTATION_0:
         madctl = (uint8_t)(ICST7735_MADCTL_MX | ICST7735_MADCTL_MY | ICST7735_MADCTL_BGR);
-        lcd->width = lcd->native_width;
-        lcd->height = lcd->native_height;
         break;
     case ICST7735_ROTATION_90:
         madctl = (uint8_t)(ICST7735_MADCTL_MY | ICST7735_MADCTL_MV | ICST7735_MADCTL_BGR);
-        lcd->width = lcd->native_height;
-        lcd->height = lcd->native_width;
         break;
     case ICST7735_ROTATION_180:
         madctl = ICST7735_MADCTL_BGR;
-        lcd->width = lcd->native_width;
-        lcd->height = lcd->native_height;
         break;
     case ICST7735_ROTATION_270:
         madctl = (uint8_t)(ICST7735_MADCTL_MX | ICST7735_MADCTL_MV | ICST7735_MADCTL_BGR);
-        lcd->width = lcd->native_height;
-        lcd->height = lcd->native_width;
         break;
     default:
         return -1;
     }
 
+#if (ICST7735_CFG_ROTATION_AUTO_ADAPT != 0U)
+    switch (rotation) {
+    case ICST7735_ROTATION_0:
+        lcd->width = lcd->native_width;
+        lcd->height = lcd->native_height;
+        rot_x_offset = lcd->base_x_offset;
+        rot_y_offset = lcd->base_y_offset;
+        break;
+    case ICST7735_ROTATION_90:
+        lcd->width = lcd->native_height;
+        lcd->height = lcd->native_width;
+        rot_x_offset = lcd->base_y_offset;
+        rot_y_offset = lcd->base_x_offset;
+        break;
+    case ICST7735_ROTATION_180:
+        lcd->width = lcd->native_width;
+        lcd->height = lcd->native_height;
+        rot_x_offset = lcd->base_x_offset;
+        rot_y_offset = lcd->base_y_offset;
+        break;
+    case ICST7735_ROTATION_270:
+        lcd->width = lcd->native_height;
+        lcd->height = lcd->native_width;
+        rot_x_offset = lcd->base_y_offset;
+        rot_y_offset = lcd->base_x_offset;
+        break;
+    default:
+        return -1;
+    }
+#else
+    lcd->width = lcd->native_width;
+    lcd->height = lcd->native_height;
+    rot_x_offset = lcd->base_x_offset;
+    rot_y_offset = lcd->base_y_offset;
+#endif
+
     if (icst7735_write_cmd_data(lcd, ICST7735_CMD_MADCTL, &madctl, 1U, 0U) != 0) {
         return -1;
     }
 
+    lcd->x_offset = rot_x_offset;
+    lcd->y_offset = rot_y_offset;
     lcd->rotation = rotation;
     return 0;
 }
@@ -296,6 +456,8 @@ int icst7735_init(icst7735_t *lcd,
     lcd->native_height = height;
     lcd->width = width;
     lcd->height = height;
+    lcd->base_x_offset = x_offset;
+    lcd->base_y_offset = y_offset;
     lcd->x_offset = x_offset;
     lcd->y_offset = y_offset;
     lcd->rotation = ICST7735_ROTATION_0;
@@ -336,7 +498,7 @@ int icst7735_init(icst7735_t *lcd,
     if (icst7735_init_sequence(lcd) != 0) {
         goto err_out;
     }
-    if (icst7735_set_rotation(lcd, ICST7735_ROTATION_0) != 0) {
+    if (icst7735_set_rotation(lcd, ICST7735_CFG_ROTATION) != 0) {
         goto err_out;
     }
     if (icst7735_set_backlight(lcd, 1) != 0) {
@@ -529,6 +691,138 @@ int icst7735_draw_pixel(icst7735_t *lcd, uint16_t x, uint16_t y, uint16_t color)
 }
 
 /********************************************************************************
+ * @brief   绘制单个英文/数字字符（5x7 字模）.
+ * @param   lcd      : 驱动句柄.
+ * @param   x        : 字符左上角 X 坐标.
+ * @param   y        : 字符左上角 Y 坐标.
+ * @param   ch       : 字符.
+ * @param   color    : 前景色.
+ * @param   bg_color : 背景色.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_draw_char(icst7735_t *lcd,
+                       uint16_t x,
+                       uint16_t y,
+                       char ch,
+                       uint16_t color,
+                       uint16_t bg_color)
+{
+    uint16_t char_pixels[ICST7735_CHAR_WIDTH * ICST7735_CHAR_HEIGHT];
+    uint8_t glyph[ICST7735_FONT5X7_WIDTH];
+    uint16_t row;
+    uint16_t col;
+
+    if (lcd == NULL || lcd->initialized == 0) {
+        return -1;
+    }
+    if (x >= lcd->width || y >= lcd->height) {
+        return -1;
+    }
+    if ((uint32_t)x + ICST7735_CHAR_WIDTH > (uint32_t)lcd->width ||
+        (uint32_t)y + ICST7735_CHAR_HEIGHT > (uint32_t)lcd->height) {
+        return -1;
+    }
+
+    icst7735_get_glyph5x7(ch, glyph);
+
+    for (row = 0U; row < ICST7735_CHAR_HEIGHT; ++row) {
+        for (col = 0U; col < ICST7735_CHAR_WIDTH; ++col) {
+            uint16_t pixel = bg_color;
+
+            if (row < ICST7735_FONT5X7_HEIGHT && col < ICST7735_FONT5X7_WIDTH) {
+                if ((glyph[col] & (uint8_t)(1U << row)) != 0U) {
+                    pixel = color;
+                }
+            }
+
+            char_pixels[(size_t)row * ICST7735_CHAR_WIDTH + col] = pixel;
+        }
+    }
+
+    return icst7735_draw_rgb565(lcd, x, y, ICST7735_CHAR_WIDTH, ICST7735_CHAR_HEIGHT, char_pixels);
+}
+
+/********************************************************************************
+ * @brief   绘制英文/数字字符串（自动换行）.
+ * @param   lcd      : 驱动句柄.
+ * @param   x        : 起始 X 坐标.
+ * @param   y        : 起始 Y 坐标.
+ * @param   str      : 字符串.
+ * @param   color    : 前景色.
+ * @param   bg_color : 背景色.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_draw_string(icst7735_t *lcd,
+                         uint16_t x,
+                         uint16_t y,
+                         const char *str,
+                         uint16_t color,
+                         uint16_t bg_color)
+{
+    uint16_t cursor_x;
+    uint16_t cursor_y;
+    const char *p;
+
+    if (lcd == NULL || lcd->initialized == 0 || str == NULL) {
+        return -1;
+    }
+    if (x >= lcd->width || y >= lcd->height) {
+        return -1;
+    }
+
+    cursor_x = x;
+    cursor_y = y;
+    p = str;
+
+    while (*p != '\0') {
+        char ch = *p;
+
+        if (ch == '\r') {
+            p++;
+            continue;
+        }
+
+        if (ch == '\n') {
+            cursor_x = x;
+            cursor_y = (uint16_t)(cursor_y + ICST7735_CHAR_HEIGHT);
+            if ((uint32_t)cursor_y + ICST7735_CHAR_HEIGHT > (uint32_t)lcd->height) {
+                return -1;
+            }
+            p++;
+            continue;
+        }
+
+        if ((uint32_t)cursor_x + ICST7735_CHAR_WIDTH > (uint32_t)lcd->width) {
+            cursor_x = x;
+            cursor_y = (uint16_t)(cursor_y + ICST7735_CHAR_HEIGHT);
+        }
+
+        if ((uint32_t)cursor_y + ICST7735_CHAR_HEIGHT > (uint32_t)lcd->height) {
+            return -1;
+        }
+
+        if (icst7735_draw_char(lcd, cursor_x, cursor_y, ch, color, bg_color) != 0) {
+            return -1;
+        }
+
+        cursor_x = (uint16_t)(cursor_x + ICST7735_CHAR_WIDTH);
+        p++;
+    }
+
+    return 0;
+}
+
+/********************************************************************************
+ * @brief   清屏（使用黑色填充全屏）.
+ * @param   lcd : 驱动句柄.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_clear_screen(icst7735_t *lcd)
+{
+    return icst7735_fill_color(lcd, ICST7735_COLOR565(0U, 0U, 0U));
+}
+
+/********************************************************************************
  * @brief   使用单一 RGB565 颜色值填充全屏.
  * @param   lcd   : 驱动句柄.
  * @param   color : RGB565 颜色值.
@@ -609,6 +903,57 @@ int icst7735_draw_rgb565(icst7735_t *lcd, uint16_t x, uint16_t y, uint16_t w, ui
         }
         cur += chunk_pixels;
         remain_pixels -= chunk_pixels;
+    }
+
+    return 0;
+}
+
+/********************************************************************************
+ * @brief   在目标区域绘制已按 LCD 字节序排列的 RGB565 图像块.
+ * @param   lcd       : 驱动句柄.
+ * @param   x         : 目标起始 X.
+ * @param   y         : 目标起始 Y.
+ * @param   w         : 图像块宽度.
+ * @param   h         : 图像块高度.
+ * @param   pixels_be : RGB565 字节流，高字节在前，按行连续存储.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_draw_rgb565_bytes(icst7735_t *lcd,
+                               uint16_t x,
+                               uint16_t y,
+                               uint16_t w,
+                               uint16_t h,
+                               const uint8_t *pixels_be)
+{
+    size_t remain_bytes;
+    size_t chunk_bytes;
+    const uint8_t *cur;
+
+    if (lcd == NULL || lcd->initialized == 0 || pixels_be == NULL || w == 0U || h == 0U) {
+        return -1;
+    }
+    if ((uint32_t)x + (uint32_t)w > (uint32_t)lcd->width || (uint32_t)y + (uint32_t)h > (uint32_t)lcd->height) {
+        return -1;
+    }
+
+    if (icst7735_set_window(lcd, x, y, (uint16_t)(x + w - 1U), (uint16_t)(y + h - 1U)) != 0) {
+        return -1;
+    }
+
+    cur = pixels_be;
+    remain_bytes = (size_t)w * (size_t)h * 2U;
+    while (remain_bytes > 0U) {
+        chunk_bytes = remain_bytes;
+        if (chunk_bytes > (ICST7735_TX_CHUNK_PIXELS * 2U)) {
+            chunk_bytes = ICST7735_TX_CHUNK_PIXELS * 2U;
+        }
+
+        if (icst7735_write_data(lcd, cur, chunk_bytes) != 0) {
+            return -1;
+        }
+
+        cur += chunk_bytes;
+        remain_bytes -= chunk_bytes;
     }
 
     return 0;

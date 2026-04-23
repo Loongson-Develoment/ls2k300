@@ -1,4 +1,5 @@
 main
+cam_fps
 build/
 .cache/
 *.o
