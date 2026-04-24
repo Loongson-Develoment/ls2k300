@@ -1,4 +1,5 @@
 main
+cam_fps
 build/
 .cache/
 *.o
@@ -11,3 +12,8 @@ build/
 .vscode/
 doc/
 .codex
+library/inc/LS2K0300_V4L2.h
+tools/build_host_cam_fps.sh
+.gitignore
+tools/host_cam_fps.c
+library/inc/LS2K0300_V4L2.h

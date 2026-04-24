@@ -16,6 +16,7 @@
 #include "LS2K0300_SPI.h"
 #include "LS2K0300_UART.h"
 #include "LS2K0300_I2C.h"
+#include "LS2K0300_HW_I2C.h"
 #include "LS2K0300_CANFD.h"
 
 #include "LS2K0300_SOFT_SPI.h"
@@ -24,5 +25,10 @@
 #include "LS2K0300_PWM_ENCODER.h"
 #include "LS2K0300_TIMER.h"
 #include "LS2K0300_SIGNAL_HANDLE.h"
+#include "LS2K0300_THREADPOOL.h"
+
+#include "ICST7735.h"
+#include "ICSSD1306.h"
+#include "X42_V2.h"
 
 #endif

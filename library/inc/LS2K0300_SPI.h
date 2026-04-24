@@ -100,7 +100,7 @@ typedef struct {
 /********************************************************************************
  * @brief   初始化 SPI 控制器.
  * @param   spi   : SPI 句柄指针.
- * @param   port  : SPI 端口（当前支持 LS_SPI2/LS_SPI3）.
+ * @param   port  : SPI 端口（当前支持 LS_SPI1/LS_SPI2/LS_SPI3，LS_SPI0 暂未实现）.
  * @param   speed : 目标时钟频率(Hz).
  * @param   mode  : SPI 时序模式.
  * @return  成功返回 0，失败返回 -1.
