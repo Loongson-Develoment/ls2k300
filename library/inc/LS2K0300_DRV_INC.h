@@ -18,7 +18,6 @@
 #include "LS2K0300_I2C.h"
 #include "LS2K0300_HW_I2C.h"
 #include "LS2K0300_CANFD.h"
-#include "LS2K0300_V4L2.h"
 
 #include "LS2K0300_SOFT_SPI.h"
 #include "LS2K0300_ATIM_PWM.h"
