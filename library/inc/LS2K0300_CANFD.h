@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 #define CANFD_MAX_DATA_LEN  64
+#define CAN_EXT_MAX_DATA_LEN  8
 #define CAN0                "can0"
 #define CAN1                "can1"
 
@@ -31,6 +32,17 @@ typedef struct {
     uint8_t  len;
     uint8_t  data[CANFD_MAX_DATA_LEN];
 } ls2k0300_canfd_frame_t;
+
+/********************************************************************************
+ * @brief   经典 CAN 扩展帧结构体.
+ * @note    can_id 只填写 29bit 扩展帧 ID，库内部会设置扩展帧标志位.
+ * @note    该结构对应硬件报文格式中的 XTD=1、FDF=0、RTR=0 数据帧.
+ ********************************************************************************/
+typedef struct {
+    uint32_t can_id;
+    uint8_t  len;
+    uint8_t  data[CAN_EXT_MAX_DATA_LEN];
+} ls2k0300_can_ext_frame_t;
 
 /********************************************************************************
  * @brief   CANFD 接收回调类型.
@@ -103,6 +115,29 @@ int ls2k0300_canfd_write_data(ls2k0300_canfd_t *canfd, uint32_t can_id, const ui
 int ls2k0300_canfd_write_frame(ls2k0300_canfd_t *canfd, const ls2k0300_canfd_frame_t *frame);
 
 /********************************************************************************
+ * @brief   发送经典 CAN 扩展帧数据.
+ * @param   canfd   : CANFD 句柄.
+ * @param   can_id  : 29bit 扩展帧 ID，不需要包含扩展帧标志位.
+ * @param   data    : 数据缓冲区.
+ * @param   len     : 数据长度，范围 0~8.
+ * @return  成功返回 write 实际字节数，失败返回 -1.
+ * @note    该接口发送 classic CAN 帧，而不是 CAN FD 帧；硬件报文格式为 XTD=1、FDF=0.
+ * @example uint8_t tx[2] = {0x36, 0x6B};
+ *          ls2k0300_canfd_write_ext_data(&can, 0x0100, tx, 2);
+ ********************************************************************************/
+int ls2k0300_canfd_write_ext_data(ls2k0300_canfd_t *canfd, uint32_t can_id, const uint8_t *data, uint8_t len);
+
+/********************************************************************************
+ * @brief   按结构体发送经典 CAN 扩展帧.
+ * @param   canfd : CANFD 句柄.
+ * @param   frame : 待发送扩展帧.
+ * @return  成功返回 write 实际字节数，失败返回 -1.
+ * @example ls2k0300_can_ext_frame_t frame = {0x0100, 2, {0x36, 0x6B}};
+ *          ls2k0300_canfd_write_ext_frame(&can, &frame);
+ ********************************************************************************/
+int ls2k0300_canfd_write_ext_frame(ls2k0300_canfd_t *canfd, const ls2k0300_can_ext_frame_t *frame);
+
+/********************************************************************************
  * @brief   读取一帧 CANFD 数据.
  * @param   canfd       : CANFD 句柄.
  * @param   frame       : 输出帧结构体.
@@ -112,6 +147,19 @@ int ls2k0300_canfd_write_frame(ls2k0300_canfd_t *canfd, const ls2k0300_canfd_fra
  *          int ret = ls2k0300_canfd_read_frame(&can, &rx, 1000);
  ********************************************************************************/
 int ls2k0300_canfd_read_frame(ls2k0300_canfd_t *canfd, ls2k0300_canfd_frame_t *frame, int timeout_ms);
+
+/********************************************************************************
+ * @brief   读取一帧经典 CAN 扩展帧.
+ * @param   canfd       : CANFD 句柄.
+ * @param   frame       : 输出扩展帧结构体.
+ * @param   timeout_ms  : 超时毫秒，-1 表示无限等待.
+ * @return  >0 为读取字节数，0 为超时，-1 为失败.
+ * @note    该接口只返回 classic CAN 扩展数据帧；标准帧、RTR、CAN FD 帧会被忽略.
+ * @note    使用 CANFD_MODE_THREAD 时，后台线程会先读取 socket；需要同步读取时推荐使用 CANFD_MODE_BLOCKING.
+ * @example ls2k0300_can_ext_frame_t rx;
+ *          int ret = ls2k0300_canfd_read_ext_frame(&can, &rx, 1000);
+ ********************************************************************************/
+int ls2k0300_canfd_read_ext_frame(ls2k0300_canfd_t *canfd, ls2k0300_can_ext_frame_t *frame, int timeout_ms);
 
 /********************************************************************************
  * @brief   运行时更新接收回调.

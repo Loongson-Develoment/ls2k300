@@ -17,6 +17,8 @@ endif()
 find_package(Threads REQUIRED)
 set(OpenCV_DIR "/home/ch2/opencv-4.10.0/install/lib/cmake/opencv4")
 find_package(OpenCV REQUIRED)
+set(ncnn_DIR "/home/ch2/ncnn/build-loongarch64/install/lib/cmake/ncnn")
+find_package(ncnn REQUIRED)
 
 include_directories(${PROJECT_SOURCE_DIR}/user/inc)
 include_directories(${PROJECT_SOURCE_DIR}/library/inc)
@@ -36,4 +38,4 @@ file(GLOB SRC
 
 add_executable(main ${SRC})
 target_compile_options(main PRIVATE -O3)
-target_link_libraries(main PUBLIC Threads::Threads ${OpenCV_LIBS})
+target_link_libraries(main PUBLIC Threads::Threads ${OpenCV_LIBS} ncnn)

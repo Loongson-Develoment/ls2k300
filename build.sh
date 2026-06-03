@@ -5,5 +5,5 @@ cmake ..
 make -j8
 mv main ../
 cd ..
-scp main root@192.168.178.200:~/
+scp main root@192.168.145.100:~/
 cp main ~/Desktop/SH

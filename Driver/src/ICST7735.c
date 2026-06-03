@@ -960,6 +960,79 @@ int icst7735_draw_rgb565_bytes(icst7735_t *lcd,
 }
 
 /********************************************************************************
+ * @brief   将 BGR565 摄像头图像以彩色方式全屏显示.
+ * @param   lcd                 : 驱动句柄.
+ * @param   frame_bgr565        : 输入 BGR565 图像缓冲区.
+ * @param   frame_width         : 源图像宽度.
+ * @param   frame_height        : 源图像高度.
+ * @param   frame_stride_pixels : 源图像行步长（像素），传 0 表示 width.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_show_camera_bgr565(icst7735_t *lcd,
+                                const uint16_t *frame_bgr565,
+                                uint16_t frame_width,
+                                uint16_t frame_height,
+                                uint32_t frame_stride_pixels)
+{
+    uint8_t tx_buf[ICST7735_TX_CHUNK_PIXELS * 2U];
+    uint16_t dst_w;
+    uint16_t dst_h;
+    size_t total_pixels;
+    size_t done_pixels;
+    size_t chunk_pixels;
+    size_t i;
+
+    if (lcd == NULL || lcd->initialized == 0 || frame_bgr565 == NULL ||
+        frame_width == 0U || frame_height == 0U) {
+        return -1;
+    }
+
+    if (frame_stride_pixels == 0U) {
+        frame_stride_pixels = frame_width;
+    }
+    if (frame_stride_pixels < frame_width) {
+        return -1;
+    }
+
+    dst_w = lcd->width;
+    dst_h = lcd->height;
+
+    if (icst7735_set_window(lcd, 0U, 0U, (uint16_t)(dst_w - 1U), (uint16_t)(dst_h - 1U)) != 0) {
+        return -1;
+    }
+
+    total_pixels = (size_t)dst_w * (size_t)dst_h;
+    done_pixels = 0U;
+    while (done_pixels < total_pixels) {
+        chunk_pixels = total_pixels - done_pixels;
+        if (chunk_pixels > ICST7735_TX_CHUNK_PIXELS) {
+            chunk_pixels = ICST7735_TX_CHUNK_PIXELS;
+        }
+
+        for (i = 0U; i < chunk_pixels; i++) {
+            size_t dst_index = done_pixels + i;
+            uint32_t dst_x = (uint32_t)(dst_index % (size_t)dst_w);
+            uint32_t dst_y = (uint32_t)(dst_index / (size_t)dst_w);
+            uint32_t src_x = (dst_x * (uint32_t)frame_width) / (uint32_t)dst_w;
+            uint32_t src_y = (dst_y * (uint32_t)frame_height) / (uint32_t)dst_h;
+            const uint16_t *src_row = frame_bgr565 + src_y * frame_stride_pixels;
+            uint16_t color565 = src_row[src_x];
+
+            tx_buf[2U * i] = (uint8_t)(color565 >> 8);
+            tx_buf[2U * i + 1U] = (uint8_t)(color565 & 0xFFU);
+        }
+
+        if (icst7735_write_data(lcd, tx_buf, chunk_pixels * 2U) != 0) {
+            return -1;
+        }
+
+        done_pixels += chunk_pixels;
+    }
+
+    return 0;
+}
+
+/********************************************************************************
  * @brief   将 BGR888 摄像头图像以彩色方式全屏显示.
  * @param   lcd                : 驱动句柄.
  * @param   frame_bgr888       : 输入 BGR888 图像缓冲区.
@@ -1015,7 +1088,112 @@ int icst7735_show_camera_bgr888(icst7735_t *lcd,
             for (i = 0U; i < chunk_pixels; i++) {
                 uint32_t src_x = ((uint32_t)(x + (uint16_t)i) * (uint32_t)frame_width) / (uint32_t)dst_w;
                 const uint8_t *p = src_row + src_x * 3U;
-                uint16_t color565 = ICST7735_COLOR565(p[2], p[1], p[0]);
+                uint16_t color565 = ICST7735_COLOR565(p[0], p[1], p[2]);
+
+                tx_buf[2U * i] = (uint8_t)(color565 >> 8);
+                tx_buf[2U * i + 1U] = (uint8_t)(color565 & 0xFFU);
+            }
+
+            if (icst7735_write_data(lcd, tx_buf, chunk_pixels * 2U) != 0) {
+                return -1;
+            }
+
+            x = (uint16_t)(x + (uint16_t)chunk_pixels);
+        }
+    }
+
+    return 0;
+}
+
+static uint8_t icst7735_clip_u8(int32_t value)
+{
+    if (value < 0) {
+        return 0U;
+    }
+    if (value > 255) {
+        return 255U;
+    }
+    return (uint8_t)value;
+}
+
+static uint16_t icst7735_yuyv_to_lcd565(uint8_t y, uint8_t u, uint8_t v)
+{
+    int32_t c = (int32_t)y - 16;
+    int32_t d = (int32_t)u - 128;
+    int32_t e = (int32_t)v - 128;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+
+    if (c < 0) {
+        c = 0;
+    }
+
+    r = icst7735_clip_u8((298 * c + 409 * e + 128) >> 8);
+    g = icst7735_clip_u8((298 * c - 100 * d - 208 * e + 128) >> 8);
+    b = icst7735_clip_u8((298 * c + 516 * d + 128) >> 8);
+
+    return ICST7735_COLOR565(b, g, r);
+}
+
+/********************************************************************************
+ * @brief   将 YUYV 摄像头图像以彩色方式全屏显示.
+ * @param   lcd                : 驱动句柄.
+ * @param   frame_yuyv        : 输入 YUYV/YUY2 图像缓冲区，字节顺序为 Y0 U Y1 V.
+ * @param   frame_width        : 源图像宽度，需为偶数.
+ * @param   frame_height       : 源图像高度.
+ * @param   frame_stride_bytes : 源图像行步长（字节），传 0 表示 width*2.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_show_camera_yuyv(icst7735_t *lcd,
+                              const uint8_t *frame_yuyv,
+                              uint16_t frame_width,
+                              uint16_t frame_height,
+                              uint32_t frame_stride_bytes)
+{
+    uint8_t tx_buf[ICST7735_TX_CHUNK_PIXELS * 2U];
+    uint16_t dst_w;
+    uint16_t dst_h;
+    uint16_t y;
+    uint16_t x;
+    size_t chunk_pixels;
+    size_t i;
+
+    if (lcd == NULL || lcd->initialized == 0 || frame_yuyv == NULL ||
+        frame_width < 2U || frame_height == 0U || ((frame_width & 1U) != 0U)) {
+        return -1;
+    }
+
+    if (frame_stride_bytes == 0U) {
+        frame_stride_bytes = (uint32_t)frame_width * 2U;
+    }
+    if (frame_stride_bytes < (uint32_t)frame_width * 2U) {
+        return -1;
+    }
+
+    dst_w = lcd->width;
+    dst_h = lcd->height;
+
+    if (icst7735_set_window(lcd, 0U, 0U, (uint16_t)(dst_w - 1U), (uint16_t)(dst_h - 1U)) != 0) {
+        return -1;
+    }
+
+    for (y = 0U; y < dst_h; y++) {
+        uint32_t src_y = ((uint32_t)y * (uint32_t)frame_height) / (uint32_t)dst_h;
+        const uint8_t *src_row = frame_yuyv + src_y * frame_stride_bytes;
+
+        x = 0U;
+        while (x < dst_w) {
+            chunk_pixels = (size_t)(dst_w - x);
+            if (chunk_pixels > ICST7735_TX_CHUNK_PIXELS) {
+                chunk_pixels = ICST7735_TX_CHUNK_PIXELS;
+            }
+
+            for (i = 0U; i < chunk_pixels; i++) {
+                uint32_t src_x = ((uint32_t)(x + (uint16_t)i) * (uint32_t)frame_width) / (uint32_t)dst_w;
+                const uint8_t *p = src_row + ((src_x & ~1U) * 2U);
+                uint8_t y_value = ((src_x & 1U) == 0U) ? p[0] : p[2];
+                uint16_t color565 = icst7735_yuyv_to_lcd565(y_value, p[1], p[3]);
 
                 tx_buf[2U * i] = (uint8_t)(color565 >> 8);
                 tx_buf[2U * i + 1U] = (uint8_t)(color565 & 0xFFU);
@@ -1089,6 +1267,80 @@ int icst7735_show_camera_gray_bgr888(icst7735_t *lcd,
                 uint32_t src_x = ((uint32_t)(x + (uint16_t)i) * (uint32_t)frame_width) / (uint32_t)dst_w;
                 const uint8_t *p = src_row + src_x * 3U;
                 uint8_t gray = (uint8_t)(((uint16_t)(p[2] * 77U) + (uint16_t)(p[1] * 150U) + (uint16_t)(p[0] * 29U)) >> 8);
+                uint16_t color565 = ICST7735_COLOR565(gray, gray, gray);
+
+                tx_buf[2U * i] = (uint8_t)(color565 >> 8);
+                tx_buf[2U * i + 1U] = (uint8_t)(color565 & 0xFFU);
+            }
+
+            if (icst7735_write_data(lcd, tx_buf, chunk_pixels * 2U) != 0) {
+                return -1;
+            }
+
+            x = (uint16_t)(x + (uint16_t)chunk_pixels);
+        }
+    }
+
+    return 0;
+}
+
+/********************************************************************************
+ * @brief   将 YUYV 摄像头图像以灰度方式全屏显示.
+ * @param   lcd                : 驱动句柄.
+ * @param   frame_yuyv        : 输入 YUYV/YUY2 图像缓冲区，字节顺序为 Y0 U Y1 V.
+ * @param   frame_width        : 源图像宽度，需为偶数.
+ * @param   frame_height       : 源图像高度.
+ * @param   frame_stride_bytes : 源图像行步长（字节），传 0 表示 width*2.
+ * @return  成功返回 0，失败返回 -1.
+ ********************************************************************************/
+int icst7735_show_camera_gray_yuyv(icst7735_t *lcd,
+                                   const uint8_t *frame_yuyv,
+                                   uint16_t frame_width,
+                                   uint16_t frame_height,
+                                   uint32_t frame_stride_bytes)
+{
+    uint8_t tx_buf[ICST7735_TX_CHUNK_PIXELS * 2U];
+    uint16_t dst_w;
+    uint16_t dst_h;
+    uint16_t y;
+    uint16_t x;
+    size_t chunk_pixels;
+    size_t i;
+
+    if (lcd == NULL || lcd->initialized == 0 || frame_yuyv == NULL ||
+        frame_width < 2U || frame_height == 0U || ((frame_width & 1U) != 0U)) {
+        return -1;
+    }
+
+    if (frame_stride_bytes == 0U) {
+        frame_stride_bytes = (uint32_t)frame_width * 2U;
+    }
+    if (frame_stride_bytes < (uint32_t)frame_width * 2U) {
+        return -1;
+    }
+
+    dst_w = lcd->width;
+    dst_h = lcd->height;
+
+    if (icst7735_set_window(lcd, 0U, 0U, (uint16_t)(dst_w - 1U), (uint16_t)(dst_h - 1U)) != 0) {
+        return -1;
+    }
+
+    for (y = 0U; y < dst_h; y++) {
+        uint32_t src_y = ((uint32_t)y * (uint32_t)frame_height) / (uint32_t)dst_h;
+        const uint8_t *src_row = frame_yuyv + src_y * frame_stride_bytes;
+
+        x = 0U;
+        while (x < dst_w) {
+            chunk_pixels = (size_t)(dst_w - x);
+            if (chunk_pixels > ICST7735_TX_CHUNK_PIXELS) {
+                chunk_pixels = ICST7735_TX_CHUNK_PIXELS;
+            }
+
+            for (i = 0U; i < chunk_pixels; i++) {
+                uint32_t src_x = ((uint32_t)(x + (uint16_t)i) * (uint32_t)frame_width) / (uint32_t)dst_w;
+                const uint8_t *p = src_row + ((src_x & ~1U) * 2U);
+                uint8_t gray = ((src_x & 1U) == 0U) ? p[0] : p[2];
                 uint16_t color565 = ICST7735_COLOR565(gray, gray, gray);
 
                 tx_buf[2U * i] = (uint8_t)(color565 >> 8);

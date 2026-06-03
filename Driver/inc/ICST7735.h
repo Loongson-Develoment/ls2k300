@@ -275,6 +275,23 @@ int icst7735_draw_rgb565_bytes(icst7735_t *lcd,
                                const uint8_t *pixels_be);
 
 /********************************************************************************
+ * @brief   将 BGR565 摄像头图像以彩色方式全屏显示.
+ * @param   lcd                 : 驱动句柄.
+ * @param   frame_bgr565        : 输入 BGR565 图像缓冲区.
+ * @param   frame_width         : 源图像宽度.
+ * @param   frame_height        : 源图像高度.
+ * @param   frame_stride_pixels : 源图像行步长（像素），传 0 表示 width.
+ * @return  成功返回 0，失败返回 -1.
+ * @note    源图像将使用最近邻缩放到屏幕尺寸，像素按高字节在前写入 LCD.
+ * @example icst7735_show_camera_bgr565(&lcd, frame, 640, 480, 0);
+ ********************************************************************************/
+int icst7735_show_camera_bgr565(icst7735_t *lcd,
+                                const uint16_t *frame_bgr565,
+                                uint16_t frame_width,
+                                uint16_t frame_height,
+                                uint32_t frame_stride_pixels);
+
+/********************************************************************************
  * @brief   将 BGR888 摄像头图像以彩色方式全屏显示.
  * @param   lcd                : 驱动句柄.
  * @param   frame_bgr888       : 输入 BGR888 图像缓冲区.
@@ -292,6 +309,23 @@ int icst7735_show_camera_bgr888(icst7735_t *lcd,
                                 uint32_t frame_stride_bytes);
 
 /********************************************************************************
+ * @brief   将 YUYV 摄像头图像以彩色方式全屏显示.
+ * @param   lcd                : 驱动句柄.
+ * @param   frame_yuyv        : 输入 YUYV/YUY2 图像缓冲区，字节顺序为 Y0 U Y1 V.
+ * @param   frame_width        : 源图像宽度，需为偶数.
+ * @param   frame_height       : 源图像高度.
+ * @param   frame_stride_bytes : 源图像行步长（字节），传 0 表示 width*2.
+ * @return  成功返回 0，失败返回 -1.
+ * @note    源图像将使用最近邻缩放到屏幕尺寸，并直接转为 LCD RGB565.
+ * @example icst7735_show_camera_yuyv(&lcd, frame, 640, 480, 0);
+ ********************************************************************************/
+int icst7735_show_camera_yuyv(icst7735_t *lcd,
+                              const uint8_t *frame_yuyv,
+                              uint16_t frame_width,
+                              uint16_t frame_height,
+                              uint32_t frame_stride_bytes);
+
+/********************************************************************************
  * @brief   将 BGR888 摄像头图像以灰度方式全屏显示.
  * @param   lcd                : 驱动句柄.
  * @param   frame_bgr888       : 输入 BGR888 图像缓冲区.
@@ -307,6 +341,23 @@ int icst7735_show_camera_gray_bgr888(icst7735_t *lcd,
                                      uint16_t frame_width,
                                      uint16_t frame_height,
                                      uint32_t frame_stride_bytes);
+
+/********************************************************************************
+ * @brief   将 YUYV 摄像头图像以灰度方式全屏显示.
+ * @param   lcd                : 驱动句柄.
+ * @param   frame_yuyv        : 输入 YUYV/YUY2 图像缓冲区，字节顺序为 Y0 U Y1 V.
+ * @param   frame_width        : 源图像宽度，需为偶数.
+ * @param   frame_height       : 源图像高度.
+ * @param   frame_stride_bytes : 源图像行步长（字节），传 0 表示 width*2.
+ * @return  成功返回 0，失败返回 -1.
+ * @note    灰度值直接使用 YUYV 中的 Y 分量，避免整帧颜色转换.
+ * @example icst7735_show_camera_gray_yuyv(&lcd, frame, 640, 480, 0);
+ ********************************************************************************/
+int icst7735_show_camera_gray_yuyv(icst7735_t *lcd,
+                                   const uint8_t *frame_yuyv,
+                                   uint16_t frame_width,
+                                   uint16_t frame_height,
+                                   uint32_t frame_stride_bytes);
 
 /********************************************************************************
  * @brief   打开或关闭面板显示.

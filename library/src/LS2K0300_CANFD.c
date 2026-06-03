@@ -1,5 +1,6 @@
 #include "LS2K0300_CANFD.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -301,6 +302,62 @@ int ls2k0300_canfd_write_frame(ls2k0300_canfd_t *canfd, const ls2k0300_canfd_fra
 }
 
 /********************************************************************************
+ * @brief   发送经典 CAN 扩展帧数据.
+ * @param   canfd   : CANFD 句柄.
+ * @param   can_id  : 29bit 扩展帧 ID，不需要包含扩展帧标志位.
+ * @param   data    : 数据缓冲区.
+ * @param   len     : 数据长度，范围 0~8.
+ * @return  成功返回 write 实际字节数，失败返回 -1.
+ * @note    硬件报文格式中 XTD=1 表示 29bit 扩展 ID，FDF=0 表示 CAN2.0
+ *          classic 帧，RTR=0 表示数据帧；SocketCAN 中分别由 CAN_EFF_FLAG
+ *          和 struct can_frame 体现。
+ * @example uint8_t tx[2] = {0x36, 0x6B};
+ *          ls2k0300_canfd_write_ext_data(&can, 0x0100, tx, 2);
+ ********************************************************************************/
+int ls2k0300_canfd_write_ext_data(ls2k0300_canfd_t *canfd, uint32_t can_id, const uint8_t *data, uint8_t len)
+{
+    struct can_frame frame;
+    int ret;
+
+    if (canfd == NULL || canfd->initialized == 0 || canfd->socket < 0) {
+        return -1;
+    }
+    if (len > CAN_EXT_MAX_DATA_LEN || (len > 0U && data == NULL)) {
+        return -1;
+    }
+
+    memset(&frame, 0, sizeof(frame));
+    frame.can_id = (can_id & CAN_EFF_MASK) | CAN_EFF_FLAG;
+    frame.can_dlc = len;
+    if (len > 0U) {
+        memcpy(frame.data, data, len);
+    }
+
+    pthread_mutex_lock(&canfd->mtx);
+    ret = (int)write(canfd->socket, &frame, sizeof(frame));
+    pthread_mutex_unlock(&canfd->mtx);
+
+    return ret;
+}
+
+/********************************************************************************
+ * @brief   按结构体发送经典 CAN 扩展帧.
+ * @param   canfd : CANFD 句柄.
+ * @param   frame : 待发送扩展帧.
+ * @return  成功返回 write 实际字节数，失败返回 -1.
+ * @example ls2k0300_can_ext_frame_t frame = {0x0100, 2, {0x36, 0x6B}};
+ *          ls2k0300_canfd_write_ext_frame(&can, &frame);
+ ********************************************************************************/
+int ls2k0300_canfd_write_ext_frame(ls2k0300_canfd_t *canfd, const ls2k0300_can_ext_frame_t *frame)
+{
+    if (frame == NULL) {
+        return -1;
+    }
+
+    return ls2k0300_canfd_write_ext_data(canfd, frame->can_id, frame->data, frame->len);
+}
+
+/********************************************************************************
  * @brief   接收一帧 CANFD 数据.
  * @param   canfd      : CANFD 句柄.
  * @param   frame      : 输出帧.
@@ -339,6 +396,87 @@ int ls2k0300_canfd_read_frame(ls2k0300_canfd_t *canfd, ls2k0300_canfd_frame_t *f
     memcpy(frame->data, can_frame.data, can_frame.len);
 
     return nbytes;
+}
+
+/********************************************************************************
+ * @brief   读取一帧经典 CAN 扩展帧.
+ * @param   canfd      : CANFD 句柄.
+ * @param   frame      : 输出扩展帧结构体.
+ * @param   timeout_ms : 超时毫秒，-1 表示无限等待.
+ * @return  >0 为读取字节数，0 为超时，-1 为失败.
+ * @note    只返回 XTD=1、FDF=0、RTR=0 的 classic CAN 扩展数据帧。
+ *          标准帧、远程帧和 CANFD 帧会被忽略。
+ * @example ls2k0300_can_ext_frame_t rx;
+ *          int ret = ls2k0300_canfd_read_ext_frame(&can, &rx, 1000);
+ ********************************************************************************/
+int ls2k0300_canfd_read_ext_frame(ls2k0300_canfd_t *canfd, ls2k0300_can_ext_frame_t *frame, int timeout_ms)
+{
+    struct pollfd pfd;
+
+    if (canfd == NULL || frame == NULL || canfd->initialized == 0 || canfd->socket < 0) {
+        return -1;
+    }
+
+    memset(frame, 0, sizeof(*frame));
+
+    pfd.fd = canfd->socket;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    while (1) {
+        struct canfd_frame raw_frame;
+        int ret;
+        int nbytes;
+
+        ret = poll(&pfd, 1, timeout_ms);
+        if (ret == 0) {
+            return 0;
+        }
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+
+        if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            return -1;
+        }
+        if ((pfd.revents & POLLIN) == 0) {
+            continue;
+        }
+
+        memset(&raw_frame, 0, sizeof(raw_frame));
+        nbytes = (int)read(canfd->socket, &raw_frame, sizeof(raw_frame));
+        if (nbytes < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            return -1;
+        }
+
+        /* classic CAN 扩展帧在 SocketCAN 中长度为 CAN_MTU，CANFD_MTU 表示 FDF=1。 */
+        if (nbytes != CAN_MTU) {
+            continue;
+        }
+        if ((raw_frame.can_id & CAN_EFF_FLAG) == 0U) {
+            continue;
+        }
+        if ((raw_frame.can_id & CAN_RTR_FLAG) != 0U) {
+            continue;
+        }
+        if (raw_frame.len > CAN_EXT_MAX_DATA_LEN) {
+            continue;
+        }
+
+        frame->can_id = raw_frame.can_id & CAN_EFF_MASK;
+        frame->len = raw_frame.len;
+        if (frame->len > 0U) {
+            memcpy(frame->data, raw_frame.data, frame->len);
+        }
+
+        return nbytes;
+    }
 }
 
 /********************************************************************************

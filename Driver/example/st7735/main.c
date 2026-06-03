@@ -17,9 +17,9 @@
  *          SCLK=PIN_64, MISO=PIN_65, MOSI=PIN_66, CS=PIN_67(内部自动控制).
  *          这里仅额外指定 DC/RST/BL 三个 GPIO.
  ********************************************************************************/
-#define EXAMPLE_LCD_DC_PIN   PIN_50
-#define EXAMPLE_LCD_RST_PIN  PIN_51
-#define EXAMPLE_LCD_BL_PIN   PIN_74
+#define EXAMPLE_LCD_RST_PIN  PIN_50
+#define EXAMPLE_LCD_DC_PIN   PIN_74
+#define EXAMPLE_LCD_BL_PIN   PIN_75
 
 /********************************************************************************
  * @brief   SPI 端口与时钟配置.

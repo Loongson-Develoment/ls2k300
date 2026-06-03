@@ -11,12 +11,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
 
 set(LS2K0300_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/../..")
-set(LS2K0300_INC_DIR "${LS2K0300_ROOT_DIR}/inc")
-set(LS2K0300_SRC_DIR "${LS2K0300_ROOT_DIR}/src")
+set(LS2K0300_INC_DIR "${LS2K0300_ROOT_DIR}/inc" "${LS2K0300_ROOT_DIR}/../Driver/inc")
+set(LS2K0300_SRC_DIR "${LS2K0300_ROOT_DIR}/src" "${LS2K0300_ROOT_DIR}/../Driver/src")
 
 add_executable(example_uart
     "${CMAKE_CURRENT_LIST_DIR}/main.c"
-    "${LS2K0300_SRC_DIR}/LS2K0300_UART.c"
+    "${LS2K0300_ROOT_DIR}/src/LS2K0300_UART.c"
 )
 
 target_include_directories(example_uart PRIVATE
