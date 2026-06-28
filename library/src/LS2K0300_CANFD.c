@@ -14,6 +14,22 @@
 #include <signal.h>
 #include <poll.h>
 
+#ifndef LS2K0300_CAN_DEFAULT_BITRATE
+#define LS2K0300_CAN_DEFAULT_BITRATE     500000U
+#endif
+
+#ifndef LS2K0300_CANFD_DEFAULT_DBITRATE
+#define LS2K0300_CANFD_DEFAULT_DBITRATE  2000000U
+#endif
+
+/*
+ * 电机协议使用 classic CAN 扩展帧。默认先按 classic CAN 拉起接口，
+ * 如需 CAN FD，可在编译参数中定义 LS2K0300_CANFD_ENABLE=1。
+ */
+#ifndef LS2K0300_CANFD_ENABLE
+#define LS2K0300_CANFD_ENABLE            0
+#endif
+
 /* SIGIO 模式下用于从信号处理函数访问实例 */
 static ls2k0300_canfd_t *s_canfd_instance = NULL;
 
@@ -106,6 +122,8 @@ int ls2k0300_canfd_init(ls2k0300_canfd_t *canfd, const char *ifname,
     struct ifreq ifr;
     struct sockaddr_can addr;
     char cmd[256];
+    unsigned int bitrate;
+    const char *bitrate_env;
 
     if (canfd == NULL || ifname == NULL) {
         return -1;
@@ -120,17 +138,46 @@ int ls2k0300_canfd_init(ls2k0300_canfd_t *canfd, const char *ifname,
     canfd->user_data = user_data;
     canfd->running = 0;
     canfd->initialized = 0;
+    bitrate = (unsigned int)LS2K0300_CAN_DEFAULT_BITRATE;
+
+    /*
+     * 调试现场时可用环境变量临时覆盖波特率，例如:
+     * LS2K0300_CAN_BITRATE=1000000 ./example_canfd
+     */
+    bitrate_env = getenv("LS2K0300_CAN_BITRATE");
+    if (bitrate_env != NULL && bitrate_env[0] != '\0') {
+        char *endptr = NULL;
+        unsigned long value = strtoul(bitrate_env, &endptr, 10);
+
+        if (endptr != bitrate_env && *endptr == '\0' && value > 0UL && value <= 8000000UL) {
+            bitrate = (unsigned int)value;
+        } else {
+            printf("Ignore invalid LS2K0300_CAN_BITRATE=%s\n", bitrate_env);
+        }
+    }
 
     strncpy(canfd->ifname, ifname, sizeof(canfd->ifname) - 1U);
     canfd->ifname[sizeof(canfd->ifname) - 1U] = '\0';
 
-    /* 先重置接口状态，再统一拉起到 CANFD 参数 */
+    /* 先重置接口状态，再统一拉起到 CAN/CANFD 参数 */
     snprintf(cmd, sizeof(cmd), "ip link set %s down", ifname);
     (void)system(cmd);
 
-    snprintf(cmd, sizeof(cmd), "ip link set %s up type can bitrate 500000 dbitrate 2000000 fd on", ifname);
+#if LS2K0300_CANFD_ENABLE
+    snprintf(cmd, sizeof(cmd),
+             "ip link set %s up type can bitrate %u dbitrate %u fd on restart-ms 100",
+             ifname,
+             bitrate,
+             (unsigned int)LS2K0300_CANFD_DEFAULT_DBITRATE);
+#else
+    snprintf(cmd, sizeof(cmd),
+             "ip link set %s up type can bitrate %u fd off restart-ms 100",
+             ifname,
+             bitrate);
+#endif
+    printf("CAN init cmd: %s\n", cmd);
     if (system(cmd) != 0) {
-        printf("CANFD cmd failed\n");
+        printf("CAN cmd failed: %s\n", cmd);
         pthread_mutex_destroy(&canfd->mtx);
         return -1;
     }

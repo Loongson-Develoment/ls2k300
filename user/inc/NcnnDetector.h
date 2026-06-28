@@ -7,24 +7,12 @@
 #include <net.h>
 #include "opencv2/opencv.hpp"
 
-struct NcnnDetection {
-    cv::Rect box;
+struct DetectResult {
+    float center_x;
+    float center_y;
+    float width;
+    float height;
     float score;
-};
-
-struct NcnnDetectTiming {
-    double preprocess_ms;
-    double inference_ms;
-    double postprocess_ms;
-    double total_ms;
-
-    NcnnDetectTiming()
-        : preprocess_ms(0.0)
-        , inference_ms(0.0)
-        , postprocess_ms(0.0)
-        , total_ms(0.0)
-    {
-    }
 };
 
 class NcnnDetector {
@@ -34,19 +22,21 @@ public:
     bool Load(const std::string& param_path, const std::string& bin_path);
     bool IsLoaded() const;
     const std::string& LastError() const;
-    const NcnnDetectTiming& LastTiming() const;
-    bool Detect(const cv::Mat& img, std::vector<NcnnDetection>* detections, NcnnDetectTiming* timing = 0);
+    ncnn::Mat Reasoning(const cv::Mat& img);
+    bool Detect(const ncnn::Mat& out, int img_width, int img_height, std::vector<DetectResult>& results);
+    DetectResult Max_score(std::vector<DetectResult>& results);
+
 
 private:
     ncnn::Mat Transform(const cv::Mat& img);
-    ncnn::Mat Reasoning(const cv::Mat& img, NcnnDetectTiming* timing);
-
+    static bool modelfile_exists(const char *path);
     ncnn::Net net_;
     bool loaded_;
     std::string last_error_;
     float conf_threshold_;
     float nms_threshold_;
-    NcnnDetectTiming last_timing_;
+    const char* ncnn_model_param_path = "./model.ncnn.param";
+    const char* ncnn_model_bin_path = "./model.ncnn.bin";
 };
 
 #endif

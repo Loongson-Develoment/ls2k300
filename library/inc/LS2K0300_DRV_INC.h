@@ -24,7 +24,7 @@
 #include "LS2K0300_GTIM_PWM.h"
 #include "LS2K0300_PWM_ENCODER.h"
 #include "LS2K0300_TIMER.h"
-#include "LS2K0300_SIGNAL_HANDLE.h"
+// #include "LS2K0300_SIGNAL_HANDLE.h"
 #include "LS2K0300_THREADPOOL.h"
 
 #include "ICST7735.h"

@@ -2,6 +2,7 @@
 #include <linux/can.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -9,6 +10,11 @@
 #include "LS2K0300_CANFD.h"
 
 #define CAN_REPLY_QUEUE_CAPACITY  (16U)
+#define MOTOR_ADDR_DEFAULT        (0x01U)
+#define MOTOR_CMD_READ_VBUS       (0x24U)
+#define MOTOR_CHECKSUM_FIXED      (0x6BU)
+#define MOTOR_REPLY_TIMEOUT_MS    (3000)
+#define CAN_DEBUG_RAW_RX          (1U)
 
 typedef struct {
     uint8_t addr;
@@ -37,6 +43,25 @@ static const char *can_reply_status_string(uint8_t status)
         case 0x9FU: return "ACTION_DONE";
         default:    return "UNKNOWN";
     }
+}
+
+/********************************************************************************
+ * @brief   打印原始 CAN 帧，便于判断是否真的收到总线数据.
+ ********************************************************************************/
+static void can_print_raw_frame(const char *tag, const ls2k0300_canfd_frame_t *frame)
+{
+    uint8_t i;
+
+    if (tag == NULL || frame == NULL) {
+        return;
+    }
+
+    printf("[%s] can_id=0x%08X len=%u data:",
+           tag, (unsigned int)frame->can_id, frame->len);
+    for (i = 0U; i < frame->len && i < CANFD_MAX_DATA_LEN; ++i) {
+        printf(" %02X", frame->data[i]);
+    }
+    printf("\n");
 }
 
 /********************************************************************************
@@ -162,6 +187,7 @@ static int can_reply_queue_pop(can_reply_queue_t *queue, can_motor_reply_t *repl
 static int can_parse_reply_frame(const ls2k0300_canfd_frame_t *frame, can_motor_reply_t *reply)
 {
     uint32_t can_id;
+    uint8_t data_offset;
 
     if (frame == NULL || reply == NULL) {
         return 0;
@@ -182,10 +208,23 @@ static int can_parse_reply_frame(const ls2k0300_canfd_frame_t *frame, can_motor_
     can_id = frame->can_id & CAN_EFF_MASK;
     reply->addr = (uint8_t)((can_id >> 8U) & 0xFFU);
     reply->packet = (uint8_t)(can_id & 0xFFU);
-    reply->code = frame->data[0];
-    reply->payload_len = (uint8_t)(frame->len - 1U);
+
+    /*
+     * 部分资料的返回表会写成: Addr Code Data Checksum；
+     * CAN 扩展帧协议表则写成: ID 带 Addr，data[0] 为 Code。
+     * 这里两种都兼容:
+     *   data: 24 xx xx 6B       -> code=24, payload=xx xx 6B
+     *   data: 01 24 xx xx 6B    -> code=24, payload=xx xx 6B
+     */
+    data_offset = 0U;
+    if (frame->len >= 2U && frame->data[0] == reply->addr) {
+        data_offset = 1U;
+    }
+
+    reply->code = frame->data[data_offset];
+    reply->payload_len = (uint8_t)(frame->len - data_offset - 1U);
     if (reply->payload_len > 0U) {
-        memcpy(reply->payload, &frame->data[1], reply->payload_len);
+        memcpy(reply->payload, &frame->data[data_offset + 1U], reply->payload_len);
     }
 
     return 1;
@@ -198,6 +237,10 @@ static void can_reply_rx_callback(const ls2k0300_canfd_frame_t *frame, void *use
 {
     can_reply_queue_t *queue;
     can_motor_reply_t reply;
+
+#if CAN_DEBUG_RAW_RX
+    can_print_raw_frame("RAW RX", frame);
+#endif
 
     queue = (can_reply_queue_t *)user_data;
     if (queue == NULL) {
@@ -237,6 +280,7 @@ static int can_send_cmd(ls2k0300_canfd_t *canfd, const uint8_t *cmd, uint8_t len
         uint8_t frame_data[CAN_EXT_MAX_DATA_LEN];
         uint8_t chunk_len;
         uint8_t i;
+        uint32_t ext_id;
         int ret;
 
         /* 每包最多放 7 字节 payload，因为 data[0] 要放功能码 Code. */
@@ -257,12 +301,18 @@ static int can_send_cmd(ls2k0300_canfd_t *canfd, const uint8_t *cmd, uint8_t len
          * 新库接口要求 can_id 只传 29bit 扩展帧 ID 本体：
          * (Addr << 8) | Packet，不需要手动拼 CAN_EFF_FLAG。
          */
-        ret = ls2k0300_canfd_write_ext_data(
-            canfd,
-            ((uint32_t)cmd[0] << 8U) | (uint32_t)packet,
-            frame_data,
-            (uint8_t)(chunk_len + 1U)
-        );
+        ext_id = ((uint32_t)cmd[0] << 8U) | (uint32_t)packet;
+
+        printf("[TX] id=0x%08X data:", (unsigned int)ext_id);
+        for (i = 0U; i < (uint8_t)(chunk_len + 1U); ++i) {
+            printf(" %02X", frame_data[i]);
+        }
+        printf("\n");
+
+        ret = ls2k0300_canfd_write_ext_data(canfd,
+                                            ext_id,
+                                            frame_data,
+                                            (uint8_t)(chunk_len + 1U));
         if (ret < 0) {
             return -1;
         }
@@ -276,8 +326,22 @@ static int can_send_cmd(ls2k0300_canfd_t *canfd, const uint8_t *cmd, uint8_t len
 }
 
 /********************************************************************************
+ * @brief   获取单调递增时间，单位 ms.
+ ********************************************************************************/
+static int64_t can_monotonic_ms(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return -1;
+    }
+
+    return ((int64_t)ts.tv_sec * 1000) + ((int64_t)ts.tv_nsec / 1000000);
+}
+
+/********************************************************************************
  * @brief   接收并解析一包电机返回帧.
- * @param   canfd      : CAN 句柄.
+ * @param   queue      : 接收队列.
  * @param   reply      : 输出解析结果.
  * @param   timeout_ms : 等待超时，单位 ms；-1 表示一直等.
  * @return  1=收到有效扩展帧，0=超时，-1=错误.
@@ -286,6 +350,89 @@ static int can_send_cmd(ls2k0300_canfd_t *canfd, const uint8_t *cmd, uint8_t len
 static int can_recv_reply(can_reply_queue_t *queue, can_motor_reply_t *reply, int timeout_ms)
 {
     return can_reply_queue_pop(queue, reply, timeout_ms);
+}
+
+/********************************************************************************
+ * @brief   等待指定地址与功能码的电机返回帧.
+ * @note    队列里可能同时存在其它命令的返回，这里会跳过不匹配的帧.
+ ********************************************************************************/
+static int can_recv_expected_reply(can_reply_queue_t *queue,
+                                   uint8_t addr,
+                                   uint8_t code,
+                                   can_motor_reply_t *reply,
+                                   int timeout_ms)
+{
+    int64_t deadline_ms = 0;
+
+    if (queue == NULL || reply == NULL) {
+        return -1;
+    }
+
+    if (timeout_ms >= 0) {
+        int64_t now_ms = can_monotonic_ms();
+        if (now_ms < 0) {
+            return -1;
+        }
+        deadline_ms = now_ms + timeout_ms;
+    }
+
+    for (;;) {
+        can_motor_reply_t current;
+        int wait_ms = timeout_ms;
+        int ret;
+
+        if (timeout_ms >= 0) {
+            int64_t now_ms = can_monotonic_ms();
+            if (now_ms < 0) {
+                return -1;
+            }
+            if (now_ms >= deadline_ms) {
+                return 0;
+            }
+            wait_ms = (int)(deadline_ms - now_ms);
+        }
+
+        ret = can_recv_reply(queue, &current, wait_ms);
+        if (ret <= 0) {
+            return ret;
+        }
+
+        if (current.addr == addr && current.code == code) {
+            *reply = current;
+            return 1;
+        }
+    }
+}
+
+/********************************************************************************
+ * @brief   解析 0x24 读取总线电压返回.
+ * @param   reply    : 电机返回帧，data 格式应为 24 VBusH VBusL 6B.
+ * @param   vbus_mv  : 输出总线电压，单位 mV.
+ * @return  0=解析成功，-1=格式错误.
+ ********************************************************************************/
+static int can_parse_vbus_mv(const can_motor_reply_t *reply, uint16_t *vbus_mv)
+{
+    if (reply == NULL || vbus_mv == NULL) {
+        return -1;
+    }
+
+    if (reply->code != MOTOR_CMD_READ_VBUS) {
+        return -1;
+    }
+
+    if (reply->payload_len != 3U) {
+        return -1;
+    }
+
+    if (reply->payload[2] != MOTOR_CHECKSUM_FIXED) {
+        return -1;
+    }
+
+    /* VBus 为 2 字节，高字节在前，单位 mV. */
+    *vbus_mv = (uint16_t)(((uint16_t)reply->payload[0] << 8U) |
+                          (uint16_t)reply->payload[1]);
+
+    return 0;
 }
 
 /********************************************************************************
@@ -306,12 +453,15 @@ static void can_print_reply(const can_motor_reply_t *reply)
         printf(" %02X", reply->payload[i]);
     }
 
-    if (reply->payload_len >= 2U) {
-        uint8_t status = reply->payload[0];
+    if (reply->payload_len > 0U) {
         uint8_t checksum = reply->payload[reply->payload_len - 1U];
 
-        printf(" status=%s checksum=0x%02X",
-               can_reply_status_string(status), checksum);
+        printf(" checksum=0x%02X", checksum);
+
+        if (reply->payload_len == 2U) {
+            uint8_t status = reply->payload[0];
+            printf(" status=%s", can_reply_status_string(status));
+        }
     }
 
     printf("\n");
@@ -322,20 +472,16 @@ int main(void)
     ls2k0300_canfd_t canfd;
     can_reply_queue_t reply_queue;
     can_motor_reply_t reply;
+    uint16_t vbus_mv;
 
-    /* 示例 1: 短命令 01 36 6B -> ID 0x0100, data: 36 6B. */
-    const uint8_t cmd_short[] = {0x01U, 0x36U, 0x6BU};
-
-    /*
-     * 示例 2: 长命令需要拆包:
-     * 第 1 包 ID 0x0100, data: FD 01 0F A0 00 00 01 FA
-     * 第 2 包 ID 0x0101, data: FD 00 00 00 6B
-     */
-    const uint8_t cmd_long[] = {
-        0x01U, 0xFDU, 0x01U, 0x0FU, 0xA0U, 0x00U, 0x00U, 0x01U,
-        0xFAU, 0x00U, 0x00U, 0x00U, 0x6BU
+    /* 读取总线电压: 01 24 6B -> ID 0x0100, data: 24 6B. */
+    const uint8_t cmd_read_vbus[] = {
+        MOTOR_ADDR_DEFAULT,
+        MOTOR_CMD_READ_VBUS,
+        MOTOR_CHECKSUM_FIXED
     };
     int ret;
+    int rx_ret;
 
     if (geteuid() != 0) {
         printf("[SKIP] canfd requires root\n");
@@ -358,48 +504,20 @@ int main(void)
         return 1;
     }
 
-    /* 发送短命令后等待一包应答，例如 data: 36 02 6B. */
-    ret = can_send_cmd(&canfd, cmd_short, (uint8_t)sizeof(cmd_short));
-    if (ret == 0) {
-        int rx_ret = can_recv_reply(&reply_queue, &reply, 1000);
-        if (rx_ret > 0) {
-            can_print_reply(&reply);
-        } else if (rx_ret == 0) {
-            printf("[WARN] short cmd reply timeout\n");
-        } else {
-            printf("[WARN] short cmd receive failed\n");
-        }
-    }
-
-    /* 发送长命令后等待一包应答；动作完成类命令后续可能还会主动返回 9F. */
-    if (ret == 0) {
-        ret = can_send_cmd(&canfd, cmd_long, (uint8_t)sizeof(cmd_long));
-        if (ret == 0) {
-            int rx_ret = can_recv_reply(&reply_queue, &reply, 1000);
-            if (rx_ret > 0) {
-                can_print_reply(&reply);
-            } else if (rx_ret == 0) {
-                printf("[WARN] long cmd reply timeout\n");
-            } else {
-                printf("[WARN] long cmd receive failed\n");
-            }
-        }
-    }
-
     /*
-     * 对于 FD/9A 等动作命令，执行完成后电机会主动回:
-     * FD 9F 校验码 / 9A 9F 校验码 等。
-     * 可以继续等待更长时间接收动作完成帧。
+     * 按文档格式发送:
+     *   扩展帧 ID = (Addr << 8) | Packet = 0x0100
+     *   data      = 24 6B
      */
+    ret = can_send_cmd(&canfd, cmd_read_vbus, (uint8_t)sizeof(cmd_read_vbus));
     if (ret == 0) {
-        int rx_ret = can_recv_reply(&reply_queue, &reply, 5000);
-        if (rx_ret > 0) {
-            can_print_reply(&reply);
-        } else if (rx_ret == 0) {
-            printf("[INFO] no action-done reply\n");
-        } else {
-            printf("[WARN] action-done receive failed\n");
-        }
+        rx_ret = can_recv_expected_reply(&reply_queue,
+                                         MOTOR_ADDR_DEFAULT,
+                                         MOTOR_CMD_READ_VBUS,
+                                         &reply,
+                                         MOTOR_REPLY_TIMEOUT_MS);
+    } else {
+        rx_ret = -1;
     }
 
     /* 释放 SocketCAN 与接收线程资源. */
@@ -411,10 +529,30 @@ int main(void)
         return 1;
     }
 
+    if (rx_ret == 0) {
+        printf("[FAIL] read vbus reply timeout\n");
+        (void)system("ip -details -statistics link show can0");
+        return 1;
+    }
+
+    if (rx_ret < 0) {
+        printf("[FAIL] read vbus receive failed\n");
+        return 1;
+    }
+
+    can_print_reply(&reply);
+    if (can_parse_vbus_mv(&reply, &vbus_mv) != 0) {
+        printf("[FAIL] read vbus reply format error\n");
+        return 1;
+    }
+
+    printf("[VBUS] addr=0x%02X vbus=%u mV (%.3f V)\n",
+           MOTOR_ADDR_DEFAULT, vbus_mv, (double)vbus_mv / 1000.0);
+
     if (reply_queue.dropped > 0U) {
         printf("[WARN] dropped replies: %lu\n", (unsigned long)reply_queue.dropped);
     }
 
-    printf("[PASS] can cmd write ok\n");
+    printf("[PASS] read vbus ok\n");
     return 0;
 }

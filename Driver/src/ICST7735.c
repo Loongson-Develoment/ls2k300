@@ -36,7 +36,7 @@
 #define ICST7735_MADCTL_MV    (0x20U)
 #define ICST7735_MADCTL_BGR   (0x08U)
 
-#define ICST7735_TX_CHUNK_PIXELS  (20480U) /* SPI 传输分块像素数，需保证单块数据不超过 64KB */
+#define ICST7735_TX_CHUNK_PIXELS  (42480U) /* SPI 传输分块像素数，需保证单块数据不超过 64KB */
 
 /********************************************************************************
  * @brief   5x7 英文/数字字模数据表.
@@ -551,6 +551,7 @@ void icst7735_deinit(icst7735_t *lcd)
     ls2k0300_gpio_deinit(&lcd->dc_gpio);
 
     memset(lcd, 0, sizeof(*lcd));
+    printf("[INFO] deinit lcd.\n");
 }
 
 /********************************************************************************

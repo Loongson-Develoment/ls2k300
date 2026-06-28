@@ -48,7 +48,7 @@ void *ls2k0300_setspeed_thread(void* arg)
 
 int main()
 {
-    ls2k0300_uart_block_init(&uart1, UART1, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE,1);
+    ls2k0300_uart_block_init(&uart1, UART4, B115200, LS_UART_STOP1, LS_UART_DATA8, LS_UART_PARITY_NONE,1);
     pthread_t uart1_thread, setspeed_thread;
     pthread_create(&uart1_thread, NULL, ls2k0300_uart_thread, NULL);
     pthread_create(&setspeed_thread, NULL, ls2k0300_setspeed_thread, NULL);

@@ -243,6 +243,7 @@ void ls2k0300_gtim_pwm_deinit(ls2k0300_gtim_pwm_t *pwm)
     pthread_mutex_destroy(&pwm->mtx);
     pthread_mutex_destroy(&pwm->enable_mtx);
 
+    printf("[INFO] deinit gtim pwm ch%d gpio%d\n", pwm->ch, pwm->gpio);
     memset(pwm, 0, sizeof(*pwm));
 }
 

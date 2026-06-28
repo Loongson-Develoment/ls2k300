@@ -52,6 +52,7 @@ void ZDT_X42_V2_Origin_Modify_Params(ls2k0300_uart_t *uart, uint8_t addr, bool s
 void ZDT_X42_V2_Origin_Trigger_Return(ls2k0300_uart_t *uart, uint8_t addr, uint8_t o_mode, bool snF); // 发送命令触发回零
 void ZDT_X42_V2_Origin_Interrupt(ls2k0300_uart_t *uart, uint8_t addr); // 强制中断并退出回零
 // void ZDT_X42_V2_Receive_Data(ls2k0300_uart_t *uart, uint8_t *rxCmd, uint8_t *rxCount); // 返回数据接收函数
+
 static int can_send_cmd(ls2k0300_canfd_t *canfd, const uint8_t *cmd, uint8_t len);
 
 

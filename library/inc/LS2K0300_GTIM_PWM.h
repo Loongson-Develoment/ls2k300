@@ -12,20 +12,33 @@ extern "C" {
 
 /********************************************************************************
  * @brief   GTIM PWM 极性枚举.
+ * @note    对应手册 GTIM_CCER.CCxP 位：
+ *          - CCxP=0：OCx = OCxREF，输出不反相；
+ *          - CCxP=1：OCx = !OCxREF，输出反相。
+ * @note    本库初始化时默认使用 GTIM_PWM_MODE_2，且向上计数。
+ *          在默认模式下，GTIM_PWM_POL_NORMAL 的 duty 对应低电平宽度；
+ *          GTIM_PWM_POL_INV 的 duty 对应高电平宽度。
+ * @note    GTIM_PWM_POL_INVALID 不是硬件极性，只用于参数检查/错误返回。
  ********************************************************************************/
 typedef enum gtim_pwm_polarity {
-    GTIM_PWM_POL_NORMAL = 0x00,
-    GTIM_PWM_POL_INV,
-    GTIM_PWM_POL_INVALID,
+    GTIM_PWM_POL_NORMAL = 0x00, /* CCxP=0：不反相；默认 MODE_2 下 duty 为低电平有效宽度 */
+    GTIM_PWM_POL_INV,           /* CCxP=1：反相；默认 MODE_2 下 duty 为高电平有效宽度 */
+    GTIM_PWM_POL_INVALID,       /* 无效极性，用于参数检查/错误返回 */
 } gtim_pwm_polarity_t;
 
 /********************************************************************************
  * @brief   GTIM PWM 模式枚举.
+ * @note    对应手册 CCMRx.OCxM：
+ *          - PWM 模式 1(110)：向上计数时 CNT < CCRx，OCxREF 为高；
+ *          - PWM 模式 2(111)：向上计数时 CNT < CCRx，OCxREF 为低。
+ * @note    本库 duty 会写入 CCRx，初始化默认使用 GTIM_PWM_MODE_2。
+ *          若切换到 GTIM_PWM_MODE_1，则 duty 与有效电平的对应关系会反过来：
+ *          POL_NORMAL 下 duty 为高电平宽度，POL_INV 下 duty 为低电平宽度。
  ********************************************************************************/
 typedef enum gtim_pwm_mode {
-    GTIM_PWM_MODE_1 = 0x06,
-    GTIM_PWM_MODE_2 = 0x07,
-    GTIM_PWM_MODE_INVALID,
+    GTIM_PWM_MODE_1 = 0x06,     /* PWM 模式 1：向上计数时 CNT < CCRx 输出 OCxREF 高电平 */
+    GTIM_PWM_MODE_2 = 0x07,     /* PWM 模式 2：向上计数时 CNT < CCRx 输出 OCxREF 低电平 */
+    GTIM_PWM_MODE_INVALID,      /* 无效模式，用于参数检查/错误返回 */
 } gtim_pwm_mode_t;
 
 /********************************************************************************

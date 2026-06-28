@@ -20,6 +20,7 @@ add_executable(example_X42_V2
     "${CMAKE_CURRENT_LIST_DIR}/main.c"
     "${LS2K0300_DRV_SRC_DIR}/X42_V2.c"
     "${LS2K0300_LIB_SRC_DIR}/LS2K0300_UART.c"
+    "${LS2K0300_LIB_SRC_DIR}/LS2K0300_CANFD.c"
 )
 
 target_include_directories(example_X42_V2 PRIVATE
