@@ -21,6 +21,9 @@ public:
 private:
     ls2k0300_gpio_t DIR, EN;
     ls2k0300_gtim_pwm_t VAL;
+    bool dir_ready;
+    bool en_ready;
+    bool pwm_ready;
 
 };
 

@@ -2,10 +2,13 @@
 #define MY_INC_H
 
 /*=========显示类==========*/
-#define CD_RST_PIN  PIN_51
-#define LCD_DC_PIN   PIN_50
-#define LCD_BL_PIN   PIN_74
+// #define CD_RST_PIN  PIN_51
+// #define LCD_DC_PIN   PIN_50
+// #define LCD_BL_PIN   PIN_74
 
+#define CD_RST_PIN  PIN_50
+#define LCD_DC_PIN   PIN_74
+#define LCD_BL_PIN   PIN_51
 #include <iostream>
 #include <unistd.h>
 #include "NcnnDetector.h"

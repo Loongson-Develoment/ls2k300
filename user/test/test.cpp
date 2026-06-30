@@ -70,14 +70,23 @@ static void handle_position_delta_input(pollfd *input_fd,
         return;
     }
 
+    if (line[0] == 'q' || line[0] == 'Q') {
+        running = 0;
+        return;
+    }
+
     if (sscanf(line, "%f", &position_delta) == 1) {
         if (!position_input_enabled) {
             printf("homing, ignore position delta=%.4f ml\n", position_delta);
+            printf("wait home finished, then enter position delta in ml, q to quit\n> ");
+            fflush(stdout);
             return;
         }
 
         control->Set_target_delta(position_delta);
         printf("position delta=%.4f ml\n", position_delta);
+        printf("> ");
+        fflush(stdout);
     }
 }
 
@@ -88,6 +97,7 @@ int main()
 
     All_control control;
     control.Trigger_home();
+    printf("homing...\n");
 
     pthread_t ctrl_thread;
     if (pthread_create(&ctrl_thread, NULL, control_thread, &control) != 0) {
@@ -110,6 +120,8 @@ int main()
             control.Set_current_as_zero();
             home_zeroed = true;
             printf("home finished, set current as zero\n");
+            printf("enter position delta in ml, q to quit\n> ");
+            fflush(stdout);
         }
 
         nanosleep(&period, NULL);

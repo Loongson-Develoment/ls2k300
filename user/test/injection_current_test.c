@@ -8,7 +8,7 @@
 #include <limits>
 #include <signal.h>
 
-#define DEFAULT_SPEED_RPM  100.0f
+#define DEFAULT_SPEED_RPM  INJECT_DEFAULT_SPEED_RPM
 #define DEFAULT_DIRECTION  0U
 
 static volatile sig_atomic_t running = 1;
@@ -143,12 +143,18 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    printf("uart=%s, addr=%u, speed=%.1f RPM, direction=%u\n",
+    printf("uart=%s, inject_addr=%u, rotate_addr=%u, speed=%.1f RPM, direction=%u\n",
            UART_INJECTION_PIN, (unsigned int)INJECTION_MOTOR_ADD,
+           (unsigned int)ROTATION_MOTOR_ADD,
            speed_rpm, (unsigned int)direction);
 
     All_control control;
     control.Inject_set_running_flag(&running);
+
+    if (!control.Rotate_control()) {
+        result = running ? 1 : 0;
+        goto cleanup;
+    }
 
     if (!control.Inject_home_to_zero()) {
         result = running ? 1 : 0;
@@ -171,6 +177,7 @@ int main(int argc, char *argv[])
     }
 
 cleanup:
+    control.Rotate_stop(ROTATE_DEFAULT_DIRECTION);
     control.Inject_stop(direction);
     return result;
 }

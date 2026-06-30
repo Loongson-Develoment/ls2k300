@@ -39,8 +39,26 @@ file(GLOB SRC
 
 set(INJECTION_CURRENT_TEST_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/injection_current_test.c")
-list(REMOVE_ITEM SRC ${INJECTION_CURRENT_TEST_SOURCE})
-set_source_files_properties(${INJECTION_CURRENT_TEST_SOURCE}
+set(ROTATION_CONTROL_TEST_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/rotation_control_test.c")
+set(ARM_X_SPEED_TEST_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/arm_x_speed_test.cpp")
+set(ARM_Z_SPEED_TEST_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/arm_z_speed_test.cpp")
+set(ARM_MOTOR23_MANUAL_TEST_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/arm_motor23_manual_test.cpp")
+set(ARM_SINE_VIDEO_TEST_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/arm_sine_video_test.cpp")
+list(REMOVE_ITEM SRC
+    ${INJECTION_CURRENT_TEST_SOURCE}
+    ${ROTATION_CONTROL_TEST_SOURCE}
+    ${ARM_X_SPEED_TEST_SOURCE}
+    ${ARM_Z_SPEED_TEST_SOURCE}
+    ${ARM_MOTOR23_MANUAL_TEST_SOURCE}
+    ${ARM_SINE_VIDEO_TEST_SOURCE})
+set_source_files_properties(
+    ${INJECTION_CURRENT_TEST_SOURCE}
+    ${ROTATION_CONTROL_TEST_SOURCE}
     PROPERTIES LANGUAGE CXX)
 
 file(GLOB INJECTION_SUPPORT_SRC
@@ -60,3 +78,33 @@ add_executable(injection_current_test
     ${INJECTION_SUPPORT_SRC})
 target_compile_options(injection_current_test PRIVATE -O3)
 target_link_libraries(injection_current_test PRIVATE Threads::Threads ${OpenCV_LIBS} ncnn)
+
+add_executable(rotation_control_test
+    ${ROTATION_CONTROL_TEST_SOURCE}
+    ${INJECTION_SUPPORT_SRC})
+target_compile_options(rotation_control_test PRIVATE -O3)
+target_link_libraries(rotation_control_test PRIVATE Threads::Threads ${OpenCV_LIBS} ncnn)
+
+add_executable(arm_x_speed_test
+    ${ARM_X_SPEED_TEST_SOURCE}
+    ${INJECTION_SUPPORT_SRC})
+target_compile_options(arm_x_speed_test PRIVATE -O3)
+target_link_libraries(arm_x_speed_test PRIVATE Threads::Threads ${OpenCV_LIBS} ncnn)
+
+add_executable(arm_z_speed_test
+    ${ARM_Z_SPEED_TEST_SOURCE}
+    ${INJECTION_SUPPORT_SRC})
+target_compile_options(arm_z_speed_test PRIVATE -O3)
+target_link_libraries(arm_z_speed_test PRIVATE Threads::Threads ${OpenCV_LIBS} ncnn)
+
+add_executable(arm_motor23_manual_test
+    ${ARM_MOTOR23_MANUAL_TEST_SOURCE}
+    ${INJECTION_SUPPORT_SRC})
+target_compile_options(arm_motor23_manual_test PRIVATE -O3)
+target_link_libraries(arm_motor23_manual_test PRIVATE Threads::Threads ${OpenCV_LIBS} ncnn)
+
+add_executable(arm_sine_video_test
+    ${ARM_SINE_VIDEO_TEST_SOURCE}
+    ${INJECTION_SUPPORT_SRC})
+target_compile_options(arm_sine_video_test PRIVATE -O3)
+target_link_libraries(arm_sine_video_test PRIVATE Threads::Threads ${OpenCV_LIBS} ncnn)

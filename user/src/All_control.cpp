@@ -46,7 +46,9 @@ All_control::All_control()
     , current_baseline_ready(false)
     , contact(false)
     , inject_position_arrived(false)
+    , rotate_position_arrived(false)
     , injection_uart_ready(false)
+    , injection_uart_external(false)
     , inject_running_flag(NULL)
 {
     All_control::Motor_control_init();
@@ -198,6 +200,32 @@ bool All_control::Is_home_finished(void) const
     return homing_finished;
 }
 
+float All_control::Motor_position_ml(void) const
+{
+    long long current_count = Read_encoder();
+
+    if (current_count == -1) {
+        return NAN;
+    }
+
+    return (float)((double)(current_count - origin_count) / COUNT_PER_1ML);
+}
+
+float All_control::Motor_target_position_ml(void) const
+{
+    return setposition;
+}
+
+float All_control::Motor_target_speed_mlps(void) const
+{
+    return setspeed;
+}
+
+float All_control::Motor_filtered_speed_mlps(void) const
+{
+    return filtered_speed;
+}
+
 bool All_control::Is_contact(void) const
 {
     return contact;
@@ -208,9 +236,25 @@ bool All_control::Is_inject_position_arrived(void) const
     return inject_position_arrived;
 }
 
+bool All_control::Is_rotate_position_arrived(void) const
+{
+    return rotate_position_arrived;
+}
+
 void All_control::Inject_set_running_flag(const volatile sig_atomic_t *running_flag)
 {
     inject_running_flag = running_flag;
+}
+
+void All_control::Inject_attach_uart(ls2k0300_uart_t *uart)
+{
+    if (uart == NULL) {
+        return;
+    }
+
+    uart_injection = *uart;
+    injection_uart_ready = true;
+    injection_uart_external = true;
 }
 
 void All_control::Motor_control(void)
@@ -326,6 +370,22 @@ void All_control::Motor_control(void)
 
     }
 
+}
+
+void All_control::Motor_stop(void)
+{
+    motor.Motor_output(0);
+    setspeed = 0.0f;
+    period_count = POSITION_LOOP_DIV;
+    position_error_ready = false;
+    position_cross_stopped = false;
+    position_arrived = true;
+    homing_active = false;
+    homing_finished = true;
+    zero_start_preloaded = false;
+    speed_pid_segment = SPEED_PID_SEG_INVALID;
+    position_pid.Set_output(0.0f);
+    speed_pid.Set_output(0.0f);
 }
 
 void All_control::Motor_control_deinit()
@@ -460,6 +520,11 @@ bool All_control::Ensure_inject_uart_ready(void)
 
 bool All_control::Inject_control_init(void)
 {
+    if (injection_uart_external) {
+        injection_uart_ready = true;
+        return true;
+    }
+
     if (ls2k0300_uart_block_init(&uart_injection, UART_INJECTION_PIN, B115200,
                                  LS_UART_STOP1, LS_UART_DATA8,
                                  LS_UART_PARITY_NONE, 1U) != 0) {
@@ -478,10 +543,21 @@ bool All_control::Inject_control_init(void)
 void All_control::Inject_control_deinit(void)
 {
     if (injection_uart_ready) {
+        if (injection_uart_external) {
+            injection_uart_ready = false;
+            return;
+        }
+
         ZDT_X42_V2_Velocity_Control(&uart_injection, INJECTION_MOTOR_ADD,
                                     0U, INJECT_VELOCITY_RAMP_RPM_PER_S,
                                     0.0f, 0U);
-        ls2k0300_uart_deinit(&uart_injection);
+        ZDT_X42_V2_Velocity_Control(&uart_injection, ROTATION_MOTOR_ADD,
+                                    ROTATE_DEFAULT_DIRECTION,
+                                    INJECT_VELOCITY_RAMP_RPM_PER_S,
+                                    0.0f, 0U);
+        if (!injection_uart_external) {
+            ls2k0300_uart_deinit(&uart_injection);
+        }
         injection_uart_ready = false;
     }
 
@@ -640,7 +716,102 @@ bool All_control::Inject_origin_status_done(uint8_t status) const
             INJECT_ORIGIN_STATUS_READY);
 }
 
-bool All_control::Inject_read_origin_status(uint8_t *status)
+bool All_control::X42_home_and_wait(uint8_t addr, const char *name,
+                                    uint8_t origin_mode)
+{
+    uint8_t stable_done_count = 0U;
+    int64_t start_ms;
+
+    if (!Ensure_inject_uart_ready()) {
+        printf("error for init injection uart\n");
+        return false;
+    }
+    if (tcflush(uart_injection.fd, TCIFLUSH) != 0) {
+        perror("tcflush injection input");
+        return false;
+    }
+
+    printf("%s home: send 9A mode %02X\n", name, origin_mode);
+    ZDT_X42_V2_Origin_Trigger_Return(&uart_injection, addr, origin_mode, false);
+
+    uint8_t response[INJECT_COMMAND_RESPONSE_SIZE] = {0};
+    ssize_t response_size =
+        Inject_read_exact_timeout(response, sizeof(response),
+                                  INJECT_POSITION_RESPONSE_TIMEOUT_MS);
+    if (response_size == (ssize_t)sizeof(response) &&
+        response[0] == addr &&
+        response[1] == INJECT_ORIGIN_COMMAND_CODE &&
+        response[3] == INJECT_CHECK_BYTE) {
+        Inject_print_bytes("origin rx", response, response_size);
+        if (response[2] == INJECT_COMMAND_STATUS_ALREADY_DONE ||
+            response[2] == INJECT_COMMAND_STATUS_DONE) {
+            printf("%s home done\n", name);
+            return true;
+        }
+        if (response[2] == INJECT_COMMAND_STATUS_PARAM_ERROR ||
+            response[2] == INJECT_COMMAND_STATUS_FORMAT_ERROR) {
+            printf("%s home command failed, status=0x%02X\n",
+                   name, response[2]);
+            return false;
+        }
+    } else if (response_size > 0) {
+        printf("%s ", name);
+        Inject_print_bytes("unexpected origin command rx", response,
+                           response_size);
+    }
+
+    Inject_sleep_ms(INJECT_ORIGIN_FIRST_POLL_DELAY_MS);
+    start_ms = Inject_monotonic_time_ms();
+
+    while (Inject_should_continue()) {
+        uint8_t status;
+        uint8_t origin_state;
+
+        if (Inject_monotonic_time_ms() - start_ms >
+            INJECT_ORIGIN_WAIT_TIMEOUT_MS) {
+            printf("%s home timeout\n", name);
+            return false;
+        }
+
+        if (!X42_read_origin_status(addr, name, &status)) {
+            Inject_sleep_ms(INJECT_ORIGIN_STATUS_POLL_MS);
+            continue;
+        }
+
+        origin_state = (uint8_t)(status & INJECT_ORIGIN_STATE_MASK);
+        printf("%s origin status=0x%02X\n", name, status);
+
+        if (origin_state == INJECT_ORIGIN_STATE_BUSY) {
+            stable_done_count = 0U;
+        } else if (origin_state == INJECT_ORIGIN_STATE_FAILED) {
+            if (origin_mode == ROTATE_ORIGIN_MODE_NEAREST_ZERO &&
+                (status & INJECT_ORIGIN_STATUS_READY_MASK) ==
+                    INJECT_ORIGIN_STATUS_READY &&
+                origin_state == ROTATE_ORIGIN_NEAREST_DONE_STATE) {
+                printf("%s nearest home done, origin status=0x%02X\n",
+                       name, status);
+                return true;
+            }
+            printf("%s home failed, origin status=0x%02X\n", name, status);
+            return false;
+        } else if (Inject_origin_status_done(status)) {
+            stable_done_count++;
+            if (stable_done_count >= INJECT_ORIGIN_STABLE_DONE_POLLS) {
+                printf("%s home done\n", name);
+                return true;
+            }
+        } else {
+            stable_done_count = 0U;
+        }
+
+        Inject_sleep_ms(INJECT_ORIGIN_STATUS_POLL_MS);
+    }
+
+    return false;
+}
+
+bool All_control::X42_read_origin_status(uint8_t addr, const char *name,
+                                         uint8_t *status)
 {
     uint8_t response[INJECT_COMMAND_RESPONSE_SIZE] = {0};
     ssize_t response_size;
@@ -653,13 +824,29 @@ bool All_control::Inject_read_origin_status(uint8_t *status)
         return false;
     }
 
-    ZDT_X42_V2_Read_Sys_Params(&uart_injection, INJECTION_MOTOR_ADD, S_OFLAG);
+    ZDT_X42_V2_Read_Sys_Params(&uart_injection, addr, S_OFLAG);
     response_size = Inject_read_exact_timeout(response, sizeof(response),
                                               INJECT_STATUS_READ_TIMEOUT_MS);
+    if (response_size == (ssize_t)sizeof(response) &&
+        response[0] == addr &&
+        response[1] == INJECT_ORIGIN_COMMAND_CODE &&
+        response[3] == INJECT_CHECK_BYTE) {
+        Inject_print_bytes("origin rx", response, response_size);
+        if (response[2] == INJECT_COMMAND_STATUS_ALREADY_DONE ||
+            response[2] == INJECT_COMMAND_STATUS_DONE) {
+            *status = INJECT_ORIGIN_STATUS_READY;
+            return true;
+        }
+        if (response[2] == INJECT_COMMAND_STATUS_PARAM_ERROR ||
+            response[2] == INJECT_COMMAND_STATUS_FORMAT_ERROR) {
+            return false;
+        }
+    }
     if (response_size != (ssize_t)sizeof(response) ||
-        response[0] != INJECTION_MOTOR_ADD ||
+        response[0] != addr ||
         response[1] != INJECT_ORIGIN_STATUS_CODE ||
         response[3] != INJECT_CHECK_BYTE) {
+        printf("%s ", name);
         Inject_print_bytes("invalid origin status rx", response,
                            response_size);
         return false;
@@ -667,6 +854,11 @@ bool All_control::Inject_read_origin_status(uint8_t *status)
 
     *status = response[2];
     return true;
+}
+
+bool All_control::Inject_read_origin_status(uint8_t *status)
+{
+    return X42_read_origin_status(INJECTION_MOTOR_ADD, "inject", status);
 }
 
 bool All_control::Inject_read_bus_current(uint16_t *current)
@@ -703,7 +895,8 @@ bool All_control::Inject_read_bus_current(uint16_t *current)
     return true;
 }
 
-bool All_control::Inject_read_motor_status(uint8_t *status)
+bool All_control::X42_read_motor_status(uint8_t addr, const char *name,
+                                        uint8_t *status)
 {
     uint8_t response[INJECT_COMMAND_RESPONSE_SIZE] = {0};
     ssize_t response_size;
@@ -716,13 +909,14 @@ bool All_control::Inject_read_motor_status(uint8_t *status)
         return false;
     }
 
-    ZDT_X42_V2_Read_Sys_Params(&uart_injection, INJECTION_MOTOR_ADD, S_SFLAG);
+    ZDT_X42_V2_Read_Sys_Params(&uart_injection, addr, S_SFLAG);
     response_size = Inject_read_exact_timeout(response, sizeof(response),
                                               INJECT_STATUS_READ_TIMEOUT_MS);
     if (response_size != (ssize_t)sizeof(response) ||
-        response[0] != INJECTION_MOTOR_ADD ||
+        response[0] != addr ||
         response[1] != INJECT_MOTOR_STATUS_CODE ||
         response[3] != INJECT_CHECK_BYTE) {
+        printf("%s ", name);
         Inject_print_bytes("invalid motor status rx", response,
                            response_size);
         return false;
@@ -732,7 +926,13 @@ bool All_control::Inject_read_motor_status(uint8_t *status)
     return true;
 }
 
-bool All_control::Inject_wait_position_ack(uint8_t *command_status)
+bool All_control::Inject_read_motor_status(uint8_t *status)
+{
+    return X42_read_motor_status(INJECTION_MOTOR_ADD, "inject", status);
+}
+
+bool All_control::X42_wait_position_ack(uint8_t addr, const char *name,
+                                        uint8_t *command_status)
 {
     uint8_t response[INJECT_COMMAND_RESPONSE_SIZE] = {0};
     ssize_t response_size;
@@ -745,7 +945,7 @@ bool All_control::Inject_wait_position_ack(uint8_t *command_status)
     }
 
     Inject_print_bytes("position rx", response, response_size);
-    if (response[0] != INJECTION_MOTOR_ADD ||
+    if (response[0] != addr ||
         response[1] != INJECT_POSITION_CODE ||
         response[3] != INJECT_CHECK_BYTE) {
         return true;
@@ -753,39 +953,48 @@ bool All_control::Inject_wait_position_ack(uint8_t *command_status)
 
     *command_status = response[2];
     if (response[2] == 0xE2U || response[2] == 0xEEU) {
-        printf("position command failed, status=0x%02X\n", response[2]);
+        printf("%s position command failed, status=0x%02X\n",
+               name, response[2]);
         return false;
     }
 
     return true;
 }
 
-bool All_control::Inject_wait_position_arrived(void)
+bool All_control::Inject_wait_position_ack(uint8_t *command_status)
+{
+    return X42_wait_position_ack(INJECTION_MOTOR_ADD, "inject",
+                                 command_status);
+}
+
+bool All_control::X42_wait_position_arrived(uint8_t addr, const char *name,
+                                            bool *arrived)
 {
     uint8_t stable_arrived_count = 0U;
     int64_t start_ms = Inject_monotonic_time_ms();
 
+    *arrived = false;
     while (Inject_should_continue()) {
         uint8_t status;
 
         if (Inject_monotonic_time_ms() - start_ms >
             INJECT_POSITION_WAIT_TIMEOUT_MS) {
-            printf("position arrive timeout\n");
+            printf("%s position arrive timeout\n", name);
             return false;
         }
 
-        if (!Inject_read_motor_status(&status)) {
+        if (!X42_read_motor_status(addr, name, &status)) {
             Inject_sleep_ms(INJECT_POSITION_STATUS_POLL_MS);
             continue;
         }
 
-        printf("motor status=0x%02X\n", status);
+        printf("%s motor status=0x%02X\n", name, status);
         if ((status & INJECT_POSITION_ARRIVED_MASK) != 0U) {
             stable_arrived_count++;
             if (stable_arrived_count >=
                 INJECT_POSITION_STABLE_DONE_POLLS) {
-                inject_position_arrived = true;
-                printf("inject position arrived\n");
+                *arrived = true;
+                printf("%s position arrived\n", name);
                 return true;
             }
         } else {
@@ -796,6 +1005,12 @@ bool All_control::Inject_wait_position_arrived(void)
     }
 
     return false;
+}
+
+bool All_control::Inject_wait_position_arrived(void)
+{
+    return X42_wait_position_arrived(INJECTION_MOTOR_ADD, "inject",
+                                     &inject_position_arrived);
 }
 
 bool All_control::Inject_set_velocity(uint8_t dir, float speed_rpm)
@@ -870,62 +1085,84 @@ void All_control::Inject_set_speed(uint8_t dir, uint16_t speed)
 
 bool All_control::Inject_home_to_zero(void)
 {
-    uint8_t stable_done_count = 0U;
-    int64_t start_ms;
+    return X42_home_and_wait(INJECTION_MOTOR_ADD, "inject",
+                             INJECT_ORIGIN_MODE_ABSOLUTE_ZERO);
+}
+
+bool All_control::Rotate_control(void)
+{
+    if (!Rotate_home_nearest()) {
+        return false;
+    }
+
+    return Rotate_move_relative(ROTATE_INIT_RELATIVE_DEGREES,
+                                ROTATE_DEFAULT_DIRECTION,
+                                INJECT_DEFAULT_SPEED_RPM);
+}
+
+bool All_control::Rotate_home_nearest(void)
+{
+    return X42_home_and_wait(ROTATION_MOTOR_ADD, "rotate",
+                             ROTATE_ORIGIN_MODE_NEAREST_ZERO);
+}
+
+bool All_control::Rotate_move_relative(float angle_degrees,
+                                       uint8_t dir,
+                                       float speed_rpm)
+{
+    uint8_t direction = dir;
+    uint8_t command_status = 0U;
+    float abs_degrees = std::fabs(angle_degrees);
 
     if (!Ensure_inject_uart_ready()) {
         printf("error for init injection uart\n");
         return false;
     }
+
+    if (angle_degrees < 0.0f) {
+        direction = (uint8_t)(dir == 0U ? 1U : 0U);
+    }
+
+    rotate_position_arrived = false;
     if (tcflush(uart_injection.fd, TCIFLUSH) != 0) {
         perror("tcflush injection input");
         return false;
     }
 
-    printf("home: send 9A mode 04\n");
-    ZDT_X42_V2_Origin_Trigger_Return(&uart_injection, INJECTION_MOTOR_ADD,
-                                     INJECT_ORIGIN_MODE_ABSOLUTE_ZERO, false);
+    printf("rotate relative position: angle=%.1f, dir=%u\n",
+           angle_degrees, (unsigned int)direction);
+    ZDT_X42_V2_Bypass_Position_LV_Control(&uart_injection,
+                                          ROTATION_MOTOR_ADD,
+                                          direction,
+                                          speed_rpm,
+                                          abs_degrees,
+                                          INJECT_POSITION_MODE_REL_CURRENT,
+                                          0U);
 
-    Inject_sleep_ms(INJECT_ORIGIN_FIRST_POLL_DELAY_MS);
-    start_ms = Inject_monotonic_time_ms();
-
-    while (Inject_should_continue()) {
-        uint8_t status;
-        uint8_t origin_state;
-
-        if (Inject_monotonic_time_ms() - start_ms >
-            INJECT_ORIGIN_WAIT_TIMEOUT_MS) {
-            printf("home timeout\n");
-            return false;
-        }
-
-        if (!Inject_read_origin_status(&status)) {
-            Inject_sleep_ms(INJECT_ORIGIN_STATUS_POLL_MS);
-            continue;
-        }
-
-        origin_state = (uint8_t)(status & INJECT_ORIGIN_STATE_MASK);
-        printf("origin status=0x%02X\n", status);
-
-        if (origin_state == INJECT_ORIGIN_STATE_BUSY) {
-            stable_done_count = 0U;
-        } else if (origin_state == INJECT_ORIGIN_STATE_FAILED) {
-            printf("home failed, origin status=0x%02X\n", status);
-            return false;
-        } else if (Inject_origin_status_done(status)) {
-            stable_done_count++;
-            if (stable_done_count >= INJECT_ORIGIN_STABLE_DONE_POLLS) {
-                printf("home done\n");
-                return true;
-            }
-        } else {
-            stable_done_count = 0U;
-        }
-
-        Inject_sleep_ms(INJECT_ORIGIN_STATUS_POLL_MS);
+    if (!X42_wait_position_ack(ROTATION_MOTOR_ADD, "rotate",
+                               &command_status)) {
+        return false;
+    }
+    if (command_status == 0x9FU) {
+        rotate_position_arrived = true;
+        printf("rotate position arrived\n");
+        return true;
     }
 
-    return false;
+    return X42_wait_position_arrived(ROTATION_MOTOR_ADD, "rotate",
+                                     &rotate_position_arrived);
+}
+
+void All_control::Rotate_stop(uint8_t dir)
+{
+    if (!Ensure_inject_uart_ready()) {
+        return;
+    }
+
+    ZDT_X42_V2_Velocity_Control(&uart_injection, ROTATION_MOTOR_ADD, dir,
+                                INJECT_VELOCITY_RAMP_RPM_PER_S, 0.0f, 0U);
+    Inject_sleep_ms(50L);
+    (void)tcflush(uart_injection.fd, TCIFLUSH);
 }
 
 bool All_control::Inject_run_until_contact(uint8_t dir, float speed_rpm)

@@ -5,7 +5,7 @@
 
 #define CAMERA_WIDTH   640
 #define CAMERA_HEIGHT  480
-#define CAMERA_FPS     120
+#define CAMERA_FPS     30
 #define CAMERA_BUFFERS 1
 
 

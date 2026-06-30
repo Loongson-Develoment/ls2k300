@@ -26,7 +26,7 @@ bool Camera::Open()
     cap_.set(cv::CAP_PROP_FPS, fps_);
     cap_.set(cv::CAP_PROP_BUFFERSIZE, buffers_);
     cap_.set(cv::CAP_PROP_AUTO_EXPOSURE, 1);
-    cap_.set(cv::CAP_PROP_EXPOSURE, 50);
+    cap_.set(cv::CAP_PROP_EXPOSURE, 300);
 
     return true;
 }
