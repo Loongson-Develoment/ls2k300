@@ -188,6 +188,7 @@ static volatile std::sig_atomic_t running = 1;
 static volatile std::sig_atomic_t shutdown_requested = 0;
 static volatile std::sig_atomic_t graceful_shutdown_ready = 0;
 static volatile std::sig_atomic_t injection_running = 1;
+static volatile std::sig_atomic_t limit_inject_test_ignore_main1 = 1;
 static pthread_mutex_t control_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
@@ -1680,6 +1681,41 @@ static void update_patrol_direction(const ArmRuntime *runtime,
     }
 }
 
+static bool limit_inject_test_patrol_limit_reached(const ArmRuntime *runtime,
+                                                   double patrol_dir)
+{
+    point3d_t position;
+    double radius_base;
+    double vx;
+    double vy = 0.0;
+    double vz = 0.0;
+    unsigned int limit_flags;
+
+    if (runtime == NULL ||
+        !compute_runtime_endpoint_position(runtime, &position, &radius_base)) {
+        return false;
+    }
+
+    (void)radius_base;
+    vx = patrol_dir * ARM_PATROL_X_SPEED_MMPS;
+    limit_flags = limit_endpoint_velocity_by_position(&position, &vx, &vy, &vz);
+    if (limit_flags != 0U) {
+        return true;
+    }
+
+    if (patrol_dir > 0.0 &&
+        position.x >= ARM_PATROL_MAX_X_MM - ARM_PATROL_X_TOLERANCE_MM) {
+        return true;
+    }
+
+    if (patrol_dir < 0.0 &&
+        position.x <= ARM_PATROL_MIN_X_MM + ARM_PATROL_X_TOLERANCE_MM) {
+        return true;
+    }
+
+    return false;
+}
+
 static bool target_lost_requested_locked(ArmRuntime *runtime)
 {
     return runtime->target_lost_requested;
@@ -2097,6 +2133,10 @@ static void *arm_control_thread(void *arg)
             continue;
         }
 
+        if (limit_inject_test_ignore_main1) {
+            continue;
+        }
+
         if (strcmp(line, cmd_inject_start) == 0) {
             pthread_mutex_lock(&control_mutex);
             ctx->runtime->inject_start_requested = true;
@@ -2289,6 +2329,8 @@ int main(void)
     int64_t post_patrol_start_ms = 0;
     int64_t shutdown_start_ms = 0;
     int64_t last_state_print_ms = 0;
+    bool limit_inject_test_done = false;
+    bool limit_inject_test_active = false;
 
     graceful_shutdown_ready = 1;
 
@@ -2357,6 +2399,44 @@ int main(void)
             break;
 
         case ARM_STATE_PATROL_X:
+            if (!limit_inject_test_done) {
+                if (limit_inject_test_patrol_limit_reached(&runtime,
+                                                           patrol_dir)) {
+                    limit_inject_test_done = true;
+                    limit_inject_test_active = true;
+                    stop_arm_motion(&motor_uart, &runtime);
+                    pthread_mutex_lock(&control_mutex);
+                    clear_injection_requests_locked(&runtime);
+                    runtime.stale_stop_sent = true;
+                    runtime.target_velocity_valid = false;
+                    runtime.target_velocity_dirty = false;
+                    runtime.joint_target_valid = false;
+                    runtime.vision_velocity_valid = false;
+                    pthread_mutex_unlock(&control_mutex);
+                    APP_LOG_INFO("main2 limit inject test: patrol limit reached, force inject once");
+                    APP_LOG_INFO("main2 state change: %s -> %s, limit inject test",
+                                 arm_state_name(state),
+                                 arm_state_name(ARM_STATE_INJECTION));
+                    state = ARM_STATE_INJECTION;
+                    break;
+                }
+
+                pthread_mutex_lock(&control_mutex);
+                clear_injection_requests_locked(&runtime);
+                runtime.stale_stop_sent = true;
+                runtime.target_velocity_valid = false;
+                runtime.target_velocity_dirty = false;
+                runtime.joint_target_valid = false;
+                runtime.vision_velocity_valid = false;
+                pthread_mutex_unlock(&control_mutex);
+
+                update_patrol_direction(&runtime, &patrol_dir);
+                run_endpoint_speed_once(&motor_uart, &runtime,
+                                        patrol_dir * ARM_PATROL_X_SPEED_MMPS,
+                                        0.0, 0.0, false);
+                break;
+            }
+
             if (inject_start_requested) {
                 APP_LOG_INFO("main2 state change: %s -> %s, inject request",
                              arm_state_name(state),
@@ -2419,6 +2499,11 @@ int main(void)
                                        &vision_uart,
                                        &motor_uart,
                                        &runtime);
+            if (limit_inject_test_active) {
+                limit_inject_test_active = false;
+                limit_inject_test_ignore_main1 = 0;
+                APP_LOG_INFO("main2 limit inject test done, resume main1 control");
+            }
             if (result == INJECT_SEQUENCE_SUCCESS) {
                 pthread_mutex_lock(&control_mutex);
                 clear_injection_requests_locked(&runtime);

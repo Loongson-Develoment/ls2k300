@@ -14,7 +14,7 @@
 
 static volatile std::sig_atomic_t running = 1;
 static volatile std::sig_atomic_t main2_handshake_ready = 0;
-static const struct timespec period = {0, 300 * 1000 * 1000}; // 300ms
+static const struct timespec period = {0, 330 * 1000 * 1000}; // 330ms
 static const char main1_handshake_cmd[] = "MAIN1_HELLO\n";
 static const char main1_handshake_ack[] = "MAIN2_ACK";
 static const char main1_exit_cmd[] = "MAIN1_EXIT\n";
@@ -34,7 +34,8 @@ static pthread_mutex_t max_result_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint16_t x_pixel_offset = 0;
 static uint16_t y_pixel_offset = 0;
 
-#define MAIN1_USE_COLOR_BLOCK 1
+/* Red color block detector is disabled; main1 now uses the ncnn neck model. */
+#define MAIN1_USE_COLOR_BLOCK 0
 #define COLOR_BLOCK_RED_HUE_LOW_1 0
 #define COLOR_BLOCK_RED_HUE_HIGH_1 10
 #define COLOR_BLOCK_RED_HUE_LOW_2 170
@@ -557,6 +558,7 @@ int main()
         icst7735_deinit(&lcd);
         return 1;
     }
+    APP_LOG_INFO("use ncnn cow neck detector, color block detector disabled");
 #else
     APP_LOG_INFO("use color block detector, ncnn detector disabled");
 #endif

@@ -41,3 +41,9 @@ target_link_libraries(main1 PUBLIC Threads::Threads ${OpenCV_LIBS} ncnn)
 add_executable(main2 ${COMMON_SRC} "${PROJECT_SOURCE_DIR}/user/main2.cpp")
 target_compile_options(main2 PRIVATE -O3)
 target_link_libraries(main2 PUBLIC Threads::Threads ${OpenCV_LIBS} ncnn)
+
+add_executable(main2_limit_inject_test
+    ${COMMON_SRC}
+    "${PROJECT_SOURCE_DIR}/user/main2_limit_inject_test.cpp")
+target_compile_options(main2_limit_inject_test PRIVATE -O3)
+target_link_libraries(main2_limit_inject_test PUBLIC Threads::Threads ${OpenCV_LIBS} ncnn)
