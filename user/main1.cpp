@@ -1,3 +1,23 @@
+/*
+ * main1：视觉检测与目标跟踪进程。
+ *
+ * 数据流：
+ *   /dev/video0 -> OpenCV 图像 -> ncnn 目标检测 -> 图像中心偏差
+ *   -> PID 末端速度命令 -> UART1 -> main2
+ *
+ * 线程模型：
+ *   - 主线程持续采集、推理，并把最高置信度目标写入共享缓存；
+ *   - transmit_function 线程读取缓存、运行跟踪状态机，并通过 UART1
+ *     与 main2 交换换行分隔的文本消息。
+ *
+ * 外设：
+ *   - V4L2 摄像头：640x480、YUYV；
+ *   - ST7735 LCD：通过 SPI2 显示带检测框的实时图像；
+ *   - UART1：115200、8N1、非阻塞，连接机械臂控制进程 main2。
+ *
+ * 并发约束：max_result/has_max_result 必须在 max_result_mutex 保护下访问；
+ * running 和 main2_handshake_ready 只承担简单的跨线程退出/就绪标志。
+ */
 #include "My_inc.h"
 #include "AppLog.h"
 
@@ -12,9 +32,17 @@
 #include <pthread.h>
 
 
+/* 进程生命周期及 main1/main2 启动同步标志。 */
 static volatile std::sig_atomic_t running = 1;
 static volatile std::sig_atomic_t main2_handshake_ready = 0;
-static const struct timespec period = {0, 330 * 1000 * 1000}; // 330ms
+
+/* 视觉速度发送周期约 330 ms，与 main2 的 700 ms 失联停车超时配合。 */
+static const struct timespec period = {0, 330 * 1000 * 1000};
+
+/*
+ * UART1 文本协议。所有发送消息以 '\n' 结束；接收函数会丢弃 '\r'，
+ * 并在 '\n' 处输出不带换行符的完整消息。
+ */
 static const char main1_handshake_cmd[] = "MAIN1_HELLO\n";
 static const char main1_handshake_ack[] = "MAIN2_ACK";
 static const char main1_exit_cmd[] = "MAIN1_EXIT\n";
@@ -28,13 +56,17 @@ static const char cmd_detect_150x150[] = "CMD:DETECT_150X150";
 static const char cmd_detect_10x10[] = "CMD:DETECT_10X10";
 static const char cmd_inject_done[] = "CMD:INJECT_DONE";
 static const char cmd_inject_fail[] = "CMD:INJECT_FAIL";
+/* 主线程向发送线程发布的“当前最高置信度目标”单槽缓存。 */
 static DetectResult max_result;
 static bool has_max_result = false;
 static pthread_mutex_t max_result_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint16_t x_pixel_offset = 0;
 static uint16_t y_pixel_offset = 0;
 
-/* Red color block detector is disabled; main1 now uses the ncnn neck model. */
+/*
+ * 检测后端选择。默认使用 ncnn 牛颈检测模型；HSV 红色色块检测保留为
+ * 无模型时的调试备选实现。
+ */
 #define MAIN1_USE_COLOR_BLOCK 0
 #define COLOR_BLOCK_RED_HUE_LOW_1 0
 #define COLOR_BLOCK_RED_HUE_HIGH_1 10
@@ -51,9 +83,9 @@ static uint16_t y_pixel_offset = 0;
 #define MAIN1_VERBOSE_SPEED_LOG 0
 
 typedef enum {
-    MAIN1_STATE_TRACK_TARGET = 0,
-    MAIN1_STATE_INJECTION_MONITOR,
-    MAIN1_STATE_PAUSED,
+    MAIN1_STATE_TRACK_TARGET = 0,  /* PID 跟踪，进入 5x5 中心窗后请求注射。 */
+    MAIN1_STATE_INJECTION_MONITOR, /* 注射期间只监视目标是否离开 150x150 窗。 */
+    MAIN1_STATE_PAUSED,            /* 停止跟踪，等待 main2 恢复检测。 */
 } Main1State;
 
 static const char *main1_state_name(Main1State state)
@@ -88,6 +120,10 @@ static double timespec_diff_ms(const struct timespec& start, const struct timesp
            (end.tv_nsec - start.tv_nsec) / 1000000.0;
 }
 
+/*
+ * HSV 红色色块检测备选路径：合并红色的两个色相区间，经开闭运算去噪，
+ * 最终以最大外轮廓的包围框作为检测结果。
+ */
 static bool detect_color_block(const cv::Mat& frame, DetectResult *result)
 {
     if (frame.empty() || result == NULL) {
@@ -157,6 +193,7 @@ static int64_t monotonic_time_ms(void)
            (int64_t)now.tv_nsec / 1000000LL;
 }
 
+/* 在 timeout_ms 内读取一条完整文本消息，主要用于需要阻塞等待的协议步骤。 */
 static bool read_line_timeout(ls2k0300_uart_t *uart, char *line,
                               size_t line_size, int timeout_ms)
 {
@@ -206,6 +243,10 @@ static bool read_line_timeout(ls2k0300_uart_t *uart, char *line,
     return false;
 }
 
+/*
+ * 非阻塞行读取器。静态 pos 保存跨调用的半包；缓冲区溢出或严重串口错误
+ * 时丢弃当前半包，避免把残缺消息交给状态机。
+ */
 static bool read_line_nonblocking(ls2k0300_uart_t *uart, char *line,
                                   size_t line_size)
 {
@@ -250,6 +291,7 @@ static bool read_line_nonblocking(ls2k0300_uart_t *uart, char *line,
     return false;
 }
 
+/* 处理非阻塞串口的短写，最多连续重试 50 次。 */
 static bool uart_write_all(ls2k0300_uart_t *uart, const char *text)
 {
     const uint8_t *data;
@@ -286,6 +328,7 @@ static bool uart_write_all(ls2k0300_uart_t *uart, const char *text)
     return true;
 }
 
+/* 重复发送退出消息，降低对端恰在忙碌状态时丢包的概率。 */
 static void notify_main2_exit(ls2k0300_uart_t *uart)
 {
     if (uart == NULL) {
@@ -310,6 +353,7 @@ static void uart_send_line(ls2k0300_uart_t *uart, const char *line)
     (void)uart_write_all(uart, line);
 }
 
+/* 将 PID 输出封装为 main2 可解析的末端速度文本，单位由 main2 统一缩放。 */
 static void send_endpoint_speed(ls2k0300_uart_t *uart,
                                 float vx,
                                 float vy,
@@ -331,6 +375,7 @@ static void send_endpoint_speed(ls2k0300_uart_t *uart,
     }
 }
 
+/* 判断目标中心是否落入以相机标定中心为基准的方形窗口。 */
 static bool result_inside_center_window(const DetectResult& result,
                                         float half_window_px)
 {
@@ -343,6 +388,10 @@ static bool result_inside_center_window(const DetectResult& result,
            std::fabs(dy) <= half_window_px;
 }
 
+/*
+ * main2 不要求应答即可启动检测：连续广播 HELLO，main2 收到任一条后进入
+ * 巡航状态；后续任意合法速度帧也会使 main2 视为握手完成。
+ */
 static bool wait_main2_handshake(ls2k0300_uart_t *uart)
 {
     for (unsigned int i = 0U; running && i < 10U; ++i) {
@@ -357,7 +406,17 @@ static bool wait_main2_handshake(ls2k0300_uart_t *uart)
     return running != 0;
 }
 
-
+/*
+ * UART/跟踪线程入口。
+ *
+ * TRACK_TARGET:
+ *   有目标且未居中 -> PID 生成 X/Z 速度；
+ *   进入中心窗     -> 停车并发送 CMD:INJECT_START。
+ * INJECTION_MONITOR:
+ *   目标离开 150x150 安全窗 -> 发送 CMD:TARGET_LOST，中止注射。
+ * PAUSED:
+ *   清空 PID 输出，等待 main2 的恢复命令。
+ */
 void *transmit_function(void *arg) {
     (void)arg;
     DetectResult transmit_result;
@@ -377,6 +436,7 @@ void *transmit_function(void *arg) {
     clear_detection_cache();
     main2_handshake_ready = 1;
 
+    /* x/z 图像误差分别映射到机械臂末端 x/z 速度，输出限幅为 100。 */
     Pid pid_x(5.0f, 0.0f, 0.15f,100);
     Pid pid_y(5.0f, 0.0f, 0.15f,100);
     // Pid pid_z(0.0f, 0.0f, 0.0f);
@@ -389,6 +449,7 @@ void *transmit_function(void *arg) {
     {
         bool local_has_result = false;
 
+        /* 缩短持锁区间：复制一份检测快照后立即解锁。 */
         pthread_mutex_lock(&max_result_mutex);
         if (has_max_result) {
             transmit_result = max_result;
@@ -396,6 +457,7 @@ void *transmit_function(void *arg) {
         }
         pthread_mutex_unlock(&max_result_mutex);
 
+        /* 一轮内排空 main2 已到达的所有控制消息。 */
         char rx_line[64];
         while (read_line_nonblocking(&uart1, rx_line, sizeof(rx_line))) {
             APP_LOG_INFO("main1 rx command: %s", rx_line);
@@ -475,6 +537,7 @@ void *transmit_function(void *arg) {
             last_state_print_ms = now_ms;
         }
 
+        /* 跟踪状态机只决定速度/事件；图像推理始终由主线程执行。 */
         switch (state) {
         case MAIN1_STATE_TRACK_TARGET:
             if (local_has_result) {
@@ -531,6 +594,7 @@ void *transmit_function(void *arg) {
 
 int main()
 {
+    /* SIGINT/SIGTERM 仅设置退出标志，资源释放在正常线程上下文完成。 */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
@@ -538,6 +602,7 @@ int main()
     NcnnDetector detector;
 #endif
 
+    /* 先初始化图像输入和显示设备，任一步失败都不启动通信线程。 */
     Camera camera;
     if (!camera.Open()) {
         return 1;
@@ -563,6 +628,7 @@ int main()
     APP_LOG_INFO("use color block detector, ncnn detector disabled");
 #endif
 
+    /* 推理与 UART 控制解耦，避免一次推理延迟阻塞协议接收。 */
     pthread_t transmit_thread;
     if (pthread_create(&transmit_thread, NULL, transmit_function, NULL) != 0) {
         APP_LOG_ERROR("could not create transmit thread");
@@ -579,6 +645,10 @@ int main()
             continue;
         }
 
+        /*
+         * 通信线程宣布就绪前只预览画面，不发布检测结果，防止 main2 尚未
+         * 完成电机回零/姿态初始化时收到运动或注射命令。
+         */
         if (!main2_handshake_ready) {
             int64_t now_ms = monotonic_time_ms();
             clear_detection_cache();
@@ -597,6 +667,7 @@ int main()
         }
 
 #if MAIN1_USE_COLOR_BLOCK
+        /* 备选 HSV 色块检测路径。 */
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 
         DetectResult current_result;
@@ -636,6 +707,7 @@ int main()
                      timespec_diff_ms(start_time, end1_time));
 #endif
 #else
+        /* 默认 ncnn 路径：128x128 推理，结果坐标再映射回原始画面。 */
         if (detector.IsLoaded()) {
             bool detect_time_valid = false;
 
@@ -660,6 +732,7 @@ int main()
                     has_max_result = false;
                     pthread_mutex_unlock(&max_result_mutex);
                 } else {
+                    /* 多目标场景只跟踪置信度最高的目标。 */
                     DetectResult current_result = detector.Max_score(results);
 
                     pthread_mutex_lock(&max_result_mutex);
@@ -714,6 +787,7 @@ int main()
             last_detect_state_print_ms = now_ms;
         }
 
+        /* LCD 接口内部完成 640x480 BGR 图像到 160x128 屏幕的显示处理。 */
         (void)icst7735_show_camera_bgr888(&lcd, frame.data, (uint16_t)frame.cols, (uint16_t)frame.rows, (uint32_t)frame.step);
 
     }

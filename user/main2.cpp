@@ -1,3 +1,25 @@
+/*
+ * main2：机械臂运动、注射动作与系统安全状态机。
+ *
+ * 通信与硬件拓扑：
+ *   main1 --UART1(115200, 文本协议)--> main2
+ *   main2 --UART4(921600, X42 二进制协议)--> 机械臂电机 1/2/3、
+ *                                            旋转电机 4、进针电机 5
+ *   主推药直流电机则由 All_control 通过 PWM、GPIO 和编码器闭环控制。
+ *
+ * 线程模型：
+ *   - arm_control_thread 只负责接收/解析 main1 消息并更新 ArmRuntime；
+ *   - 主线程以 30 ms 周期运行系统状态机，独占执行回零、巡航、跟踪、
+ *     注射和安全退出等有序动作；
+ *   - control_mutex 同时保护 ArmRuntime 共享字段以及 UART4 上不能交错的
+ *     “发命令-收应答”事务。
+ *
+ * 安全策略：
+ *   - 启动后先对三轴就近回零、标定电机零点，再移动到工作姿态；
+ *   - 视觉速度超过 700 ms 未更新即停车并退回巡航；
+ *   - 末端空间限位和电机 RPM 限幅在每个速度修正周期生效；
+ *   - SIGINT/SIGTERM 或 main1 退出时，停止注射并按 x、z 两阶段回安全角度。
+ */
 #include "ArmMotorPosition.h"
 #include "ArmKinematics.h"
 #include "All_control.h"
@@ -136,12 +158,12 @@
 #define INJECT_PUSH_WAIT_TIMEOUT_MS 20000LL /* 主推药电机推药到位等待超时，单位 ms */
 
 typedef enum {
-    ARM_STATE_WAIT_HANDSHAKE = 0,
-    ARM_STATE_PATROL_X,
-    ARM_STATE_TRACK_TARGET,
-    ARM_STATE_INJECTION,
-    ARM_STATE_POST_INJECT_PATROL,
-    ARM_STATE_SHUTDOWN_RETURN_SAFE,
+    ARM_STATE_WAIT_HANDSHAKE = 0,   /* 等待 main1 HELLO/首个速度帧。 */
+    ARM_STATE_PATROL_X,             /* 无目标时沿末端 x 轴往返搜索。 */
+    ARM_STATE_TRACK_TARGET,         /* 执行 main1 给出的视觉末端速度。 */
+    ARM_STATE_INJECTION,            /* 停止机械臂并同步执行进针、推药、退针。 */
+    ARM_STATE_POST_INJECT_PATROL,   /* 注射成功后继续巡航 2 s。 */
+    ARM_STATE_SHUTDOWN_RETURN_SAFE, /* 中断后按规划顺序返回安全角度。 */
 } ArmControlState;
 
 static const char *arm_state_name(ArmControlState state)
@@ -171,6 +193,10 @@ typedef enum {
     INJECT_SEQUENCE_INTERRUPTED,
 } InjectSequenceResult;
 
+/*
+ * 与 main1 约定的换行分隔文本协议。常量中接收模式不带 '\n'，发送模式
+ * 带 '\n'；速度帧格式为 X:<vx>,Y:<vy>,Z:<vz>。
+ */
 static const char main1_handshake_cmd[] = "MAIN1_HELLO";
 static const char main2_handshake_ack[] = "MAIN2_ACK\n";
 static const char main1_exit_cmd[] = "MAIN1_EXIT";
@@ -184,6 +210,7 @@ static const char cmd_detect_150x150[] = "CMD:DETECT_150X150\n";
 static const char cmd_inject_done[] = "CMD:INJECT_DONE\n";
 static const char cmd_inject_fail[] = "CMD:INJECT_FAIL\n";
 
+/* 信号处理器与阻塞注射流程共享的生命周期标志。 */
 static volatile std::sig_atomic_t running = 1;
 static volatile std::sig_atomic_t shutdown_requested = 0;
 static volatile std::sig_atomic_t graceful_shutdown_ready = 0;
@@ -191,19 +218,24 @@ static volatile std::sig_atomic_t injection_running = 1;
 static pthread_mutex_t control_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
+    /* 当前实测关节角，以及上电标定得到的电机 2/3 零点，单位 rad/deg。 */
     double theta1;
     double theta2;
     double theta3;
     double motor2_zero_degrees;
     double motor3_zero_degrees;
+    /* 当前末端速度目标及其积分得到的关节角参考，单位 mm/s、rad。 */
     double target_vx;
     double target_vy;
     double target_vz;
     double target_theta2;
     double target_theta3;
+    /* 控制周期、日志周期、视觉帧新鲜度所需的单调时钟时间戳。 */
     int64_t last_correction_us;
     int64_t last_position_print_ms;
     JointMotorSpeeds last_speeds;
+
+    /* 有效性/事件标志均在 control_mutex 保护下跨线程读写。 */
     int64_t last_rx_ms;
     bool stale_stop_sent;
     bool motor_zero_valid;
@@ -222,6 +254,10 @@ typedef struct {
     ArmRuntime *runtime;
 } ArmThreadContext;
 
+/*
+ * 第一次信号请求优雅回安全位；若初始化尚未允许优雅退出，或再次收到信号，
+ * 则直接清 running，保证故障场景不会无限等待。
+ */
 static void signal_handler(int signum)
 {
     (void)signum;
@@ -232,6 +268,7 @@ static void signal_handler(int signum)
     injection_running = 0;
 }
 
+/* 非阻塞 UART 的可靠文本发送：处理短写并做有限次数重试。 */
 static bool uart_write_all(ls2k0300_uart_t *uart, const char *text)
 {
     const uint8_t *data;
@@ -268,6 +305,7 @@ static bool uart_write_all(ls2k0300_uart_t *uart, const char *text)
     return true;
 }
 
+/* main1/main2 互相通知退出，确保任一侧退出时另一侧不会继续运动。 */
 static void notify_main1_exit(ls2k0300_uart_t *vision_uart)
 {
     if (vision_uart == NULL) {
@@ -337,6 +375,9 @@ static double clamp_double(double value, double min_value, double max_value)
     return value;
 }
 
+/*==================== X42 应答解析与机械臂回零 ====================*/
+
+/* 在绝对截止时间前轮询一个字节，区分数据、超时和不可恢复错误。 */
 static ssize_t read_uart_byte_timeout(ls2k0300_uart_t *uart, uint8_t *byte,
                                       int64_t deadline_ms)
 {
@@ -369,6 +410,10 @@ static void print_x42_frame(const char *prefix, uint8_t addr,
     app_log_bytes("INFO", label, buffer, size);
 }
 
+/*
+ * 从可能含噪声/残帧的 UART4 字节流中同步出 addr+code+status+0x6B 四字节
+ * 应答；不匹配的地址或功能码会被跳过。
+ */
 static ssize_t read_x42_4byte_response_timeout(ls2k0300_uart_t *uart,
                                                uint8_t addr,
                                                uint8_t code,
@@ -480,6 +525,7 @@ static bool read_arm_origin_status(ls2k0300_uart_t *motor_uart,
     return true;
 }
 
+/* 触发单轴就近回零，并轮询状态直到稳定完成、明确失败或超时。 */
 static bool home_arm_motor_nearest(ls2k0300_uart_t *motor_uart,
                                    uint8_t addr)
 {
@@ -585,6 +631,7 @@ static bool home_arm_motor_nearest(ls2k0300_uart_t *motor_uart,
     return false;
 }
 
+/* 三轴顺序回零，避免共享 UART4 上的应答交错。 */
 static bool home_arm_motors_nearest(ls2k0300_uart_t *motor_uart)
 {
     const uint8_t addrs[] = {
@@ -627,6 +674,12 @@ static bool read_motor23_degrees(ls2k0300_uart_t *motor_uart,
     return true;
 }
 
+/*==================== 关节角标定与位置模式运动 ====================*/
+
+/*
+ * 读取电机 2/3 的累计机械角，并结合上电零点、减速比和方向换算关节角。
+ * theta1 当前固定为标定值，尚未从电机 1 实时位置反算。
+ */
 static bool read_runtime_joint_angles(ls2k0300_uart_t *motor_uart,
                                       ArmRuntime *runtime)
 {
@@ -654,6 +707,7 @@ static bool read_runtime_joint_angles(ls2k0300_uart_t *motor_uart,
     return true;
 }
 
+/* 将当前电机 2/3 的累计角记为机械臂定义的初始关节姿态。 */
 static bool calibrate_runtime_motor_zero(ls2k0300_uart_t *motor_uart,
                                          ArmRuntime *runtime)
 {
@@ -769,6 +823,7 @@ static bool wait_arm_position_arrived(ls2k0300_uart_t *motor_uart,
     return false;
 }
 
+/* 发送相对当前位置的限速位置命令；needs_wait 表示仍需轮询到位状态。 */
 static bool start_arm_relative_position_degrees(ls2k0300_uart_t *motor_uart,
                                                 uint8_t addr,
                                                 const char *name,
@@ -873,6 +928,10 @@ static double startup_joint_solution_distance(double theta2,
            std::fabs(normalize_angle_delta(theta3 - ref_theta3));
 }
 
+/*
+ * 二连杆平面逆解可能有两组解，选择与当前 theta2/theta3 总角距离更近的一组，
+ * 降低启动和退出过程中的关节突跳。
+ */
 static bool solve_startup_xz_to_joint_angles(double x,
                                              double z,
                                              double ref_theta2,
@@ -928,6 +987,7 @@ static bool solve_startup_xz_to_joint_angles(double x,
     return true;
 }
 
+/* 把关节目标换算为电机相对角，依次下发并等待电机 2/3 稳定到位。 */
 static bool move_arm_joints_to_target(ls2k0300_uart_t *motor_uart,
                                       ArmRuntime *runtime,
                                       const char *stage_name,
@@ -998,6 +1058,10 @@ static bool move_arm_joints_to_target(ls2k0300_uart_t *motor_uart,
     return true;
 }
 
+/*
+ * 启动姿态采用“先 z、后 x/最终角”两阶段路径，避免直接关节插补穿越
+ * 空间限位区域。
+ */
 static bool move_arm_to_startup_pose(ls2k0300_uart_t *motor_uart,
                                      ArmRuntime *runtime)
 {
@@ -1093,6 +1157,7 @@ static bool move_arm_to_startup_pose(ls2k0300_uart_t *motor_uart,
     return true;
 }
 
+/* 注射中止恢复时保持当前 x，仅把 z 恢复到启动姿态高度。 */
 static bool move_arm_to_startup_height(ls2k0300_uart_t *motor_uart,
                                        ArmRuntime *runtime,
                                        const char *stage_name)
@@ -1154,6 +1219,8 @@ static void print_runtime_joint_angles(const char *prefix,
                  runtime->theta2 * 180.0 / M_PI,
                  runtime->theta3 * 180.0 / M_PI);
 }
+
+/*==================== 末端速度闭环与空间限位 ====================*/
 
 static bool compute_runtime_endpoint_position(const ArmRuntime *runtime,
                                               point3d_t *position,
@@ -1239,6 +1306,10 @@ static bool is_low_z_band(double z)
     return z >= ARM_LIMIT_LOW_Z_MIN_MM && z <= ARM_LIMIT_LOW_Z_MAX_MM;
 }
 
+/*
+ * 按当前末端位置裁剪“继续向禁区运动”的速度分量。函数只禁止越界方向，
+ * 反向脱离限位区的速度仍然保留。
+ */
 static unsigned int limit_endpoint_velocity_by_position(
     const point3d_t *position,
     double *vx,
@@ -1309,6 +1380,7 @@ static unsigned int limit_endpoint_velocity_by_position(
     return flags;
 }
 
+/* 三轴按相同比例缩放，使最大电机转速不超过 ARM_MAX_MOTOR_RPM。 */
 static void apply_motor_limit(JointMotorSpeeds *speeds)
 {
     float max_rpm = std::max(speeds->velocity_1.rpm_abs,
@@ -1327,6 +1399,7 @@ static void apply_motor_limit(JointMotorSpeeds *speeds)
     speeds->velocity_3.rpm_abs = fabsf(speeds->velocity_3.rpm);
 }
 
+/* UART4 为共享总线，三轴速度命令间隔 1 ms 顺序发送。 */
 static void send_arm_speeds(ls2k0300_uart_t *motor_uart,
                             const JointMotorSpeeds *speeds)
 {
@@ -1448,6 +1521,15 @@ static bool parse_velocity_line(const char *line, double *vx, double *vy,
     return false;
 }
 
+/*
+ * 一次 30 ms 速度修正：
+ *   1. 读取实测关节角并计算末端位置；
+ *   2. 应用空间限位；
+ *   3. 雅可比逆解得到目标关节/电机速度；
+ *   4. 对目标关节角积分，并用实测角误差修正开环速度；
+ *   5. 应用 RPM 限幅后下发三轴。
+ * 调用者必须已经持有 control_mutex。
+ */
 static void correct_arm_speed_locked(ls2k0300_uart_t *motor_uart,
                                      ArmRuntime *runtime)
 {
@@ -1655,6 +1737,8 @@ static void stop_arm_motion(ls2k0300_uart_t *motor_uart, ArmRuntime *runtime)
     pthread_mutex_unlock(&control_mutex);
 }
 
+/*==================== 巡航、注射与异常恢复 ====================*/
+
 static void update_patrol_direction(const ArmRuntime *runtime,
                                     double *patrol_dir)
 {
@@ -1691,6 +1775,10 @@ static void clear_injection_requests_locked(ArmRuntime *runtime)
     runtime->target_lost_requested = false;
 }
 
+/*
+ * 注射失败/丢目标后的统一恢复：停全部运动、退针回零，可选重置基座，
+ * 恢复机械臂高度，最后重新通知 main1 使用 5x5 跟踪窗。
+ */
 static bool recover_after_injection_abort(All_control *inject_control,
                                           ls2k0300_uart_t *vision_uart,
                                           ls2k0300_uart_t *motor_uart,
@@ -1749,6 +1837,7 @@ static bool recover_after_injection_abort(All_control *inject_control,
     return height_ready;
 }
 
+/* 主推药直流电机闭环执行期间持续检查超时和目标丢失。 */
 static bool wait_push_motor_arrived(All_control *inject_control,
                                     ArmRuntime *runtime)
 {
@@ -1804,6 +1893,12 @@ static float sample_inject_current_for_verify(All_control *inject_control,
     return inject_control->Inject_current_average();
 }
 
+/*
+ * 完整注射顺序：
+ *   电流检测进针接触 -> 接触后定量进针 -> 电流复检
+ *   -> 主推药电机推进指定 ml -> 注射电机回零退针。
+ * 任一步都可能被目标丢失或系统退出标志中断。
+ */
 static InjectSequenceResult run_injection_sequence(All_control *inject_control,
                                                    ls2k0300_uart_t *vision_uart,
                                                    ls2k0300_uart_t *motor_uart,
@@ -1928,6 +2023,10 @@ static bool wait_shutdown_stage_x_reached(ls2k0300_uart_t *motor_uart,
     return false;
 }
 
+/*
+ * 安全退出路径与启动路径相反：先保持当前 z 调整 x，再回到最终关节角，
+ * 每一阶段都使用实测角/位置确认并受总超时保护。
+ */
 static bool run_shutdown_return_zero_by_angle(ls2k0300_uart_t *motor_uart,
                                               ArmRuntime *runtime,
                                               int64_t shutdown_start_ms)
@@ -2058,6 +2157,12 @@ out:
     return ok;
 }
 
+/*==================== main1 接收线程与系统主状态机 ====================*/
+
+/*
+ * 接收线程只做协议解析和共享状态更新，不直接向 UART4 发电机指令，从而
+ * 避免与主线程的 X42 命令/应答事务交错。
+ */
 static void *arm_control_thread(void *arg)
 {
     ArmThreadContext *ctx = (ArmThreadContext *)arg;
@@ -2166,6 +2271,7 @@ static void *arm_control_thread(void *arg)
 
 int main(void)
 {
+    /* 退出信号先进入安全回位状态，资源释放统一在主流程末尾完成。 */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
@@ -2174,6 +2280,7 @@ int main(void)
     memset(&vision_uart, 0, sizeof(vision_uart));
     memset(&motor_uart, 0, sizeof(motor_uart));
 
+    /* UART1 接 main1 文本协议；UART4 接全部 X42 电机二进制协议。 */
     if (ls2k0300_uart_init(&vision_uart, ARM_VISION_UART, B115200,
                            LS_UART_STOP1, LS_UART_DATA8,
                            LS_UART_PARITY_NONE,
@@ -2192,6 +2299,7 @@ int main(void)
         return 1;
     }
 
+    /* 上电安全序列：三轴回零 -> 角度标定 -> 工作姿态 -> 旋转轴 90 度。 */
     if (!home_arm_motors_nearest(&motor_uart)) {
         APP_LOG_ERROR("main2 startup nearest home failed, exit before control");
         JointMotorSpeeds zero;
@@ -2203,6 +2311,10 @@ int main(void)
         return 1;
     }
 
+    /*
+     * All_control 复用已经打开的 UART4，避免同一设备被重复打开；外部
+     * injection_running 使其内部阻塞动作能被丢目标/退出事件打断。
+     */
     All_control inject_control;
     inject_control.Inject_attach_uart(&motor_uart);
     inject_control.Inject_set_running_flag(&injection_running);
@@ -2268,6 +2380,7 @@ int main(void)
     ctx.motor_uart = &motor_uart;
     ctx.runtime = &runtime;
 
+    /* 启动 main1 接收线程后，主线程专注于 30 ms 系统状态机。 */
     pthread_t control_thread;
     if (pthread_create(&control_thread, NULL, arm_control_thread, &ctx) != 0) {
         APP_LOG_ERROR("failed to create arm control thread");
@@ -2341,6 +2454,13 @@ int main(void)
             last_state_print_ms = now_ms;
         }
 
+        /*
+         * 顶层状态转移：
+         * WAIT_HANDSHAKE -> PATROL_X -> TRACK_TARGET -> INJECTION
+         *                          ^          |             |
+         *                          +--超时----+             +-> POST_INJECT_PATROL
+         * 任意状态收到退出请求都会进入 SHUTDOWN_RETURN_SAFE。
+         */
         switch (state) {
         case ARM_STATE_WAIT_HANDSHAKE:
             if (handshake_done) {
@@ -2413,6 +2533,7 @@ int main(void)
             break;
 
         case ARM_STATE_INJECTION: {
+            /* 注射期间 main1 扩大监视窗；丢目标会异步中断当前注射步骤。 */
             send_main1_command(&vision_uart, cmd_detect_150x150);
             InjectSequenceResult result =
                 run_injection_sequence(&inject_control,
@@ -2511,6 +2632,7 @@ int main(void)
         }
     }
 
+    /* 先等接收线程退出，再停全部执行器并释放两个串口。 */
     pthread_join(control_thread, NULL);
 
     pthread_mutex_lock(&control_mutex);

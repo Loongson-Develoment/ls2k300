@@ -130,8 +130,6 @@
 
 /* 注射流程参数 */
 #define INJECT_NEEDLE_DIRECTION 0U          /* 注射进针方向，按现场电机方向定义 */
-#define INJECT_AFTER_CONTACT_UNITS 50000    /* 接触后继续进针的相对位置单位 */
-#define INJECT_CURRENT_VERIFY_DELAY_MS 300LL /* 接触后继续进针完成后的电流复检延时，单位 ms */
 #define INJECT_PUSH_VOLUME_ML 1.0f          /* 推药剂体积，单位 ml */
 #define INJECT_PUSH_WAIT_TIMEOUT_MS 20000LL /* 主推药电机推药到位等待超时，单位 ms */
 
@@ -1819,35 +1817,11 @@ static bool wait_push_motor_arrived(All_control *inject_control,
     return false;
 }
 
-static float sample_inject_current_for_verify(All_control *inject_control,
-                                              ArmRuntime *runtime)
-{
-    int64_t start_ms = monotonic_time_ms();
-
-    while (running && !shutdown_requested && injection_running &&
-           monotonic_time_ms() - start_ms < INJECT_CURRENT_VERIFY_DELAY_MS) {
-        pthread_mutex_lock(&control_mutex);
-        bool target_lost = target_lost_requested_locked(runtime);
-        pthread_mutex_unlock(&control_mutex);
-        if (target_lost) {
-            break;
-        }
-
-        inject_control->Inject_control();
-        usleep(INJECT_QUERY_PERIOD_MS * 1000);
-    }
-
-    return inject_control->Inject_current_average();
-}
-
 static InjectSequenceResult run_injection_sequence(All_control *inject_control,
                                                    ls2k0300_uart_t *vision_uart,
                                                    ls2k0300_uart_t *motor_uart,
                                                    ArmRuntime *runtime)
 {
-    float contact_current;
-    float verify_current;
-
     injection_running = 1;
     stop_arm_motion(motor_uart, runtime);
 
@@ -1863,32 +1837,6 @@ static InjectSequenceResult run_injection_sequence(All_control *inject_control,
         return lost ? INJECT_SEQUENCE_TARGET_LOST :
                shutdown_requested ? INJECT_SEQUENCE_INTERRUPTED :
                INJECT_SEQUENCE_FAIL;
-    }
-
-    contact_current = inject_control->Inject_current_average();
-
-    if (!inject_control->Inject_move_relative(INJECT_AFTER_CONTACT_UNITS,
-                                              INJECT_NEEDLE_DIRECTION,
-                                              INJECT_DEFAULT_SPEED_RPM)) {
-        pthread_mutex_lock(&control_mutex);
-        bool lost = target_lost_requested_locked(runtime);
-        pthread_mutex_unlock(&control_mutex);
-        return lost ? INJECT_SEQUENCE_TARGET_LOST :
-               shutdown_requested ? INJECT_SEQUENCE_INTERRUPTED :
-               INJECT_SEQUENCE_FAIL;
-    }
-
-    verify_current = sample_inject_current_for_verify(inject_control, runtime);
-    pthread_mutex_lock(&control_mutex);
-    bool lost_after_verify = target_lost_requested_locked(runtime);
-    pthread_mutex_unlock(&control_mutex);
-    if (lost_after_verify) {
-        return INJECT_SEQUENCE_TARGET_LOST;
-    }
-    if (verify_current > contact_current) {
-        APP_LOG_WARN("inject verify failed: current %.3f > contact %.3f",
-                     verify_current, contact_current);
-        return INJECT_SEQUENCE_FAIL;
     }
 
     send_main1_command(vision_uart, cmd_detect_150x150);
