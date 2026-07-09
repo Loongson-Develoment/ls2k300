@@ -2,6 +2,7 @@
 
 #include <unistd.h>
 #include <stdlib.h>
+#include <signal.h>
 
 static ls2k0300_signal_exit_cb_t g_exit_cb = NULL;
 

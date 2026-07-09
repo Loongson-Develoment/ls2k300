@@ -110,6 +110,7 @@ void ls2k0300_gpio_deinit(ls2k0300_gpio_t *gpio)
     if (gpio->gpio_base != NULL) {
         ls2k0300_munmap((void *)gpio->gpio_base, 0x1000);
     }
+    gpio_pin_t old_pin = gpio->pin;
 
     gpio->gpio_base = NULL;
     gpio->gpio_one = NULL;
@@ -122,6 +123,7 @@ void ls2k0300_gpio_deinit(ls2k0300_gpio_t *gpio)
 
     pthread_mutex_unlock(&gpio->mtx);
     pthread_mutex_destroy(&gpio->mtx);
+    printf("[INFO] deinit gpio %d\n", old_pin);
 }
 
 /********************************************************************************

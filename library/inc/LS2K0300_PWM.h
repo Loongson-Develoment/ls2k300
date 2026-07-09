@@ -9,11 +9,18 @@ extern "C" {
 
 /********************************************************************************
  * @brief   PWM 极性枚举.
+ * @note    对应手册 PWM CTRL.INVERT 位：
+ *          - INVERT=0：原始输出，周期以低电平开始；
+ *          - INVERT=1：反相输出，周期以高电平开始。
+ * @note    本库的 duty 会写入 Low_buffer，即低电平持续时间比例。
+ *          因此 PWM_POL_NORMAL 下 duty 对应低电平有效宽度；
+ *          PWM_POL_INV 下输出被反相，duty 对应高电平有效宽度。
+ * @note    PWM_POL_INVALID 不是硬件极性，只用于参数检查/错误返回。
  ********************************************************************************/
 typedef enum pwm_polarity {
-    PWM_POL_NORMAL = 0x00,
-    PWM_POL_INV,
-    PWM_POL_INVALID,
+    PWM_POL_NORMAL = 0x00,  /* INVERT=0：原始输出，低电平有效；周期先低后高 */
+    PWM_POL_INV,            /* INVERT=1：反相输出，高电平有效；周期先高后低 */
+    PWM_POL_INVALID,        /* 无效极性，用于参数检查/错误返回 */
 } pwm_polarity_t;
 
 /********************************************************************************

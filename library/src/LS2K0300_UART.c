@@ -464,6 +464,7 @@ void ls2k0300_uart_deinit(ls2k0300_uart_t *uart)
     uart->initialized = 0;
     pthread_mutex_unlock(&uart->mtx);
     pthread_mutex_destroy(&uart->mtx);
+    printf("[INFO] deinit uart\n");
 }
 
 /********************************************************************************

@@ -205,7 +205,8 @@ void ls2k0300_pwm_deinit(ls2k0300_pwm_t *pwm)
     if (pwm->pwm_base != NULL) {
         ls2k0300_munmap((void *)pwm->pwm_base, 0x1000);
     }
-
+    pwm_channel_t old_ch = pwm->ch;
+    pwm_pin_t old_pin = pwm->gpio;
     pwm->pwm_base = NULL;
     pwm->pwm_low_buf = NULL;
     pwm->pwm_full_buf = NULL;
@@ -220,6 +221,8 @@ void ls2k0300_pwm_deinit(ls2k0300_pwm_t *pwm)
 
     pthread_mutex_unlock(&pwm->mtx);
     pthread_mutex_destroy(&pwm->mtx);
+
+    printf("[INFO] deinit pwm ch%d gpio%d\n", old_ch, old_pin);
 }
 
 /********************************************************************************

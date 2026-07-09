@@ -17,6 +17,7 @@ Each test case now has its own folder and `main.c`:
 - `encoder/main.c`
 - `timer/main.c`
 - `canfd/main.c`
+- `camera/main.c`
 
 ## Build
 
@@ -52,4 +53,5 @@ cmake --build build --target example_uart
 
 - Most register-based modules need `/dev/mem` access, usually with root privileges.
 - `example_canfd` configures `can0`, usually requiring root privileges.
+- `example_camera` reads MJPEG frames from `/dev/video0` by default.
 - Default pins are only references. Adjust according to your board wiring.

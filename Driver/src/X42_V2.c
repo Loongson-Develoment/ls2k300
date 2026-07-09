@@ -8,7 +8,69 @@
 ***	CSDN博客：http s://blog.csdn.net/zhangdatou666
 ***	qq交流群：262438510
 **********************************************************/
+/********************************************************************************
+ * @brief   按电机 CAN 扩展帧协议发送一条完整命令.
+ * @note    命令格式: cmd[0]=Addr, cmd[1]=Code, cmd[2...]=命令数据/校验码.
+ * @note    扩展帧 ID: (Addr << 8) | Packet, Packet 从 0 开始递增.
+ * @note    经典 CAN 单帧最多 8 字节数据，本协议每帧第 1 字节固定为 Code,
+ *          因此每包最多携带 7 字节命令数据/校验码.
+ ********************************************************************************/
+static int can_send_cmd(ls2k0300_canfd_t *canfd, const uint8_t *cmd, uint8_t len)
+{
+    uint8_t payload_len;
+    uint8_t offset;
+    uint8_t packet;
 
+    if (canfd == NULL || cmd == NULL || len < 2U) {
+        return -1;
+    }
+
+    /* 除去 Addr 与 Code 后，剩余部分都作为命令数据/校验码参与分包. */
+    payload_len = (uint8_t)(len - 2U);
+    offset = 0U;
+    packet = 0U;
+
+    do {
+        uint8_t frame_data[CAN_EXT_MAX_DATA_LEN];
+        uint8_t chunk_len;
+        uint8_t i;
+        int ret;
+
+        /* 每包最多放 7 字节 payload，因为 data[0] 要放功能码 Code. */
+        chunk_len = (uint8_t)(payload_len - offset);
+        if (chunk_len > 7U) {
+            chunk_len = 7U;
+        }
+
+        /* 每包第一个数据字节固定为功能码 Code. */
+        frame_data[0] = cmd[1];
+
+        /* 从 cmd[2] 开始拷贝命令数据/校验码到 data[1...]. */
+        for (i = 0U; i < chunk_len; ++i) {
+            frame_data[i + 1U] = cmd[offset + 2U + i];
+        }
+
+        /*
+         * 新库接口要求 can_id 只传 29bit 扩展帧 ID 本体：
+         * (Addr << 8) | Packet，不需要手动拼 CAN_EFF_FLAG。
+         */
+        ret = ls2k0300_canfd_write_ext_data(
+            canfd,
+            ((uint32_t)cmd[0] << 8U) | (uint32_t)packet,
+            frame_data,
+            (uint8_t)(chunk_len + 1U)
+        );
+        if (ret < 0) {
+            return -1;
+        }
+
+        /* 更新下一包的 payload 偏移与 Packet 序号. */
+        offset = (uint8_t)(offset + chunk_len);
+        ++packet;
+    } while (offset < payload_len);
+
+    return 0;
+}
 
 void usart_SendCmd(ls2k0300_uart_t *uart, uint8_t *cmd, uint8_t len)
 {

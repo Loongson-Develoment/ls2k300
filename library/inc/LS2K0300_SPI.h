@@ -26,13 +26,16 @@ typedef enum ls_spi_port {
 
 /********************************************************************************
  * @brief   SPI 模式枚举.
+ * @note    CPOL 表示空闲时钟电平，CPHA 表示采样相位：
+ *          - CPHA=0：第一个时钟跳变沿采样数据；
+ *          - CPHA=1：第二个时钟跳变沿采样数据。
  ********************************************************************************/
 typedef enum ls_reg_spi_mode {
-    LS_SPI_MODE_0 = 0x00,
-    LS_SPI_MODE_1,
-    LS_SPI_MODE_2,
-    LS_SPI_MODE_3,
-    LS_SPI_MODE_INVALID,
+    LS_SPI_MODE_0 = 0x00,   /* CPOL=0, CPHA=0：空闲低电平，第一个跳变沿采样 */
+    LS_SPI_MODE_1,          /* CPOL=0, CPHA=1：空闲低电平，第二个跳变沿采样 */
+    LS_SPI_MODE_2,          /* CPOL=1, CPHA=0：空闲高电平，第一个跳变沿采样 */
+    LS_SPI_MODE_3,          /* CPOL=1, CPHA=1：空闲高电平，第二个跳变沿采样 */
+    LS_SPI_MODE_INVALID,    /* 无效模式，用于参数检查/错误返回 */
 } ls_reg_spi_mode_t;
 
 /********************************************************************************
@@ -47,22 +50,26 @@ typedef enum ls_spi_bits_per_word {
 } ls_spi_bits_per_word_t;
 
 /********************************************************************************
- * @brief   SPI 数据顺序枚举.
+ * @brief   SPI 数据位序枚举.
+ * @note    该配置只决定一个数据单元内部的 bit 发送顺序，不改变缓冲区字节顺序。
  ********************************************************************************/
 typedef enum ls_spi_data_order {
-    LS_SPI_MSB_FIRST = 0x00,
-    LS_SPI_LSB_FIRST = (1 << 7),
-    LS_SPI_DATA_ORDER_INVALID,
+    LS_SPI_MSB_FIRST = 0x00,        /* 高位先发：bit7 -> bit0，常见 SPI 器件默认位序 */
+    LS_SPI_LSB_FIRST = (1 << 7),    /* 低位先发：bit0 -> bit7，对应 CFG1.LSBFRST 置位 */
+    LS_SPI_DATA_ORDER_INVALID,      /* 无效位序，用于参数检查/错误返回 */
 } ls_spi_data_order_t;
 
 /********************************************************************************
  * @brief   SPI FIFO 阈值枚举.
+ * @note    阈值单位为 FIFO 数据单元，数据单元宽度由 bpw 配置决定；
+ *          默认 8bit 数据宽度下可理解为 1/2/4 字节。
+ * @note    TX 阈值用于判断发送 FIFO 可写空间，RX 阈值用于判断接收 FIFO 可读数据量。
  ********************************************************************************/
 typedef enum ls_spi_fifo_threshould {
-    LS_SPI_FIFO_THRESH_1 = 0x00,
-    LS_SPI_FIFO_THRESH_2 = 0x01,
-    LS_SPI_FIFO_THRESH_4 = 0x03,
-    LS_SPI_FIFO_THRESH_INVALID,
+    LS_SPI_FIFO_THRESH_1 = 0x00,    /* 阈值为 1 个 FIFO 数据单元 */
+    LS_SPI_FIFO_THRESH_2 = 0x01,    /* 阈值为 2 个 FIFO 数据单元 */
+    LS_SPI_FIFO_THRESH_4 = 0x03,    /* 阈值为 4 个 FIFO 数据单元 */
+    LS_SPI_FIFO_THRESH_INVALID,     /* 无效阈值，用于参数检查/错误返回 */
 } ls_spi_fifo_threshould_t;
 
 /********************************************************************************
